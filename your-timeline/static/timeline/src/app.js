@@ -1307,6 +1307,12 @@ function renderTimeline({ issues, rangeStart, totalDays }) {
     const row = el('div', 'row');
     const label = el('div', 'row-label issue-label clickable');
     label.style.paddingLeft = `${8 + depth * 18}px`;
+    // 그룹/계층 연결 가이드선 (들여쓰기 단계마다 세로선 → 묶음이 한눈에)
+    for (let dpt = 1; dpt <= depth; dpt++) {
+      const guide = el('span', 'row-guide' + (dpt === depth && opts.last ? ' last' : ''));
+      guide.style.left = `${8 + (dpt - 1) * 18 + 7}px`;
+      label.appendChild(guide);
+    }
     if (opts.caret) {
       const c = el('span', 'caret', opts.collapsed ? '▶' : '▼');
       c.onclick = (ev) => { ev.stopPropagation(); opts.onToggle(); };

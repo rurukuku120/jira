@@ -202,9 +202,12 @@ body {
 .bar-handle.right { right: 0; }
 .bar-handle:hover { background: rgba(255,255,255,0.35); }
 
-/* 에픽 그룹 */
-.group-row { background: var(--bg-soft); }
-.group-label { font-weight: 600; cursor: pointer; gap: 6px; background: var(--bg-soft); }
+/* 그룹/계층 연결 가이드선 */
+.row-guide { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--bar); opacity: 0.5; pointer-events: none; z-index: 3; }
+
+/* 에픽/그룹 헤더 — 또렷하게 구분 */
+.group-row { background: var(--bg-soft); box-shadow: inset 0 2px 0 var(--bar); }
+.group-label { font-weight: 700; cursor: pointer; gap: 6px; background: var(--bg-soft); box-shadow: inset 4px 0 0 var(--bar); }
 .group-label .caret { color: var(--subtle); font-size: 10px; width: 12px; }
 .group-label .epic-count { color: var(--subtle); font-weight: 400; }
 .group-row .row-track { border-bottom: 1px solid var(--grid); }

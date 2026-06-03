@@ -3713,6 +3713,11 @@
       const row = el("div", "row");
       const label = el("div", "row-label issue-label clickable");
       label.style.paddingLeft = `${8 + depth * 18}px`;
+      for (let dpt = 1; dpt <= depth; dpt++) {
+        const guide = el("span", "row-guide" + (dpt === depth && opts.last ? " last" : ""));
+        guide.style.left = `${8 + (dpt - 1) * 18 + 7}px`;
+        label.appendChild(guide);
+      }
       if (opts.caret) {
         const c = el("span", "caret", opts.collapsed ? "\u25B6" : "\u25BC");
         c.onclick = (ev) => {
