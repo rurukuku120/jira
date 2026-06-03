@@ -39,6 +39,7 @@ const state = {
   projectKey: null,
   filters: [],
   assignees: [],          // 프로젝트 배정 가능 사용자 [{id, name}]
+  allLabels: [],          // 사이트 전역 라벨 목록
   selectedFilterId: '',
   customJql: '',
   zoom: 'week',
@@ -56,6 +57,10 @@ const state = {
   mineOnly: false,        // 내 이슈만
   myAccountId: null,      // 현재 사용자 accountId
   advOpen: false,         // 고급 필터 패널 열림 상태
+  layout: 'gantt',        // gantt | table
+  showVersions: true,     // 버전(마일스톤) 수직선 표시
+  versions: [],           // 프로젝트 버전 [{name, releaseDate, released}]
+  presets: {},            // 보기 프리셋 { name: config }
   title: '당신의 타임라인',
   collapsed: {},      // { epicKey: true } 접힘 상태
   data: null,         // 마지막 로드 결과 { issues, startFieldId, rangeStart, totalDays }
@@ -75,16 +80,22 @@ async function main() {
       context?.extension?.project?.key || context?.extension?.project?.id;
     state.myAccountId = context?.accountId || null;
 
-    const [{ filters }, { title }, asg, col] = await Promise.all([
+    const [{ filters }, { title }, asg, col, lbl, ver, pre] = await Promise.all([
       invoke('listFilters'),
       invoke('getTitle'),
       invoke('listAssignees', { projectKey: state.projectKey }),
       invoke('getIssueColors'),
+      invoke('listLabels'),
+      invoke('listVersions', { projectKey: state.projectKey }),
+      invoke('getPresets'),
     ]);
     state.filters = filters || [];
     state.title = title || '당신의 타임라인';
     state.assignees = (asg && asg.assignees) || [];
     state.colors = (col && col.colors) || {};
+    state.allLabels = (lbl && lbl.labels) || [];
+    state.versions = (ver && ver.versions) || [];
+    state.presets = (pre && pre.presets) || {};
 
     await loadAll();
   } catch (e) {
@@ -547,20 +558,30 @@ function renderToolbar() {
   }
 
   // ----- 우측 그룹 -----
-  // 그룹화 기준
-  const viewSel = el('select');
-  viewSel.title = '그룹화 기준';
-  for (const [val, label] of [
-    ['flat', '그룹: 없음'], ['assignee', '그룹: 담당자'], ['epic', '그룹: 에픽'],
-    ['tree', '그룹: 하위 작업'], ['priority', '그룹: 우선순위'], ['type', '그룹: 유형'],
-    ['label', '그룹: 라벨'], ['duebucket', '그룹: 마감 시기'],
-  ]) {
-    const opt = new Option(label, val);
-    if (state.view === val) opt.selected = true;
-    viewSel.appendChild(opt);
+  const gantt = state.layout === 'gantt';
+
+  // 레이아웃 토글 (간트 / 표)
+  const layoutBtn = el('button', null, gantt ? '표 보기' : '간트 보기');
+  layoutBtn.title = '간트 ↔ 표 전환';
+  layoutBtn.onclick = () => { state.layout = gantt ? 'table' : 'gantt'; render(true); };
+  right.appendChild(layoutBtn);
+
+  // 그룹화 기준 (간트 전용)
+  if (gantt) {
+    const viewSel = el('select');
+    viewSel.title = '그룹화 기준';
+    for (const [val, label] of [
+      ['flat', '그룹: 없음'], ['assignee', '그룹: 담당자'], ['epic', '그룹: 에픽'],
+      ['tree', '그룹: 하위 작업'], ['priority', '그룹: 우선순위'], ['type', '그룹: 유형'],
+      ['label', '그룹: 라벨'], ['duebucket', '그룹: 마감 시기'],
+    ]) {
+      const opt = new Option(label, val);
+      if (state.view === val) opt.selected = true;
+      viewSel.appendChild(opt);
+    }
+    viewSel.onchange = () => { state.view = viewSel.value; render(); };
+    right.appendChild(viewSel);
   }
-  viewSel.onchange = () => { state.view = viewSel.value; render(); };
-  right.appendChild(viewSel);
 
   // 정렬 기준 + 방향
   const sortSel = el('select');
@@ -581,35 +602,50 @@ function renderToolbar() {
   dirBtn.onclick = () => { state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc'; render(); };
   right.appendChild(dirBtn);
 
-  // 줌 버튼 (주/개월/분기)
-  const zoomBox = el('div', 'zoom');
-  for (const k of ['week', 'month', 'quarter']) {
-    const b = el('button', 'zoom-btn' + (state.zoom === k ? ' active' : ''), ZOOM[k].label);
-    b.onclick = () => { state.zoom = k; state.zoomScale = 1; render(true); };
-    zoomBox.appendChild(b);
-  }
-  right.appendChild(zoomBox);
+  // 줌 버튼 + 오늘 + 버전 토글 (간트 전용)
+  if (gantt) {
+    const zoomBox = el('div', 'zoom');
+    for (const k of ['week', 'month', 'quarter']) {
+      const b = el('button', 'zoom-btn' + (state.zoom === k ? ' active' : ''), ZOOM[k].label);
+      b.onclick = () => { state.zoom = k; state.zoomScale = 1; render(true); };
+      zoomBox.appendChild(b);
+    }
+    right.appendChild(zoomBox);
 
-  // 오늘로 이동
-  const todayBtn = el('button', null, '오늘');
-  todayBtn.onclick = () => scrollToToday();
-  right.appendChild(todayBtn);
+    const todayBtn = el('button', null, '오늘');
+    todayBtn.onclick = () => scrollToToday();
+    right.appendChild(todayBtn);
+
+    if (state.versions.length) {
+      const verBtn = el('button', state.showVersions ? 'active' : null, '🏁 버전');
+      verBtn.title = '버전(릴리스) 수직선 표시/숨김';
+      verBtn.onclick = () => { state.showVersions = !state.showVersions; render(true); };
+      right.appendChild(verBtn);
+    }
+  }
+
+  // 프리셋
+  const presetBtn = el('button', null, '프리셋');
+  presetBtn.id = 'preset-btn';
+  right.appendChild(presetBtn);
 
   // 휴일 관리
   const manageBtn = el('button', null, '휴일 관리');
   manageBtn.id = 'manage-btn';
   right.appendChild(manageBtn);
 
-  // 범례
-  const legend = el('div', 'legend');
-  legend.innerHTML =
-    '<span><span class="swatch" style="background:var(--holiday)"></span>공휴일/휴일</span>' +
-    '<span><span class="swatch" style="background:var(--weekend)"></span>주말</span>' +
-    '<span><span class="swatch" style="background:var(--bar-new)"></span>할 일</span>' +
-    '<span><span class="swatch" style="background:var(--bar)"></span>진행 중</span>' +
-    '<span><span class="swatch" style="background:var(--bar-done)"></span>완료</span>' +
-    '<span><span class="swatch" style="background:#36b37e;width:3px"></span>오늘</span>';
-  right.appendChild(legend);
+  // 범례 (간트 전용)
+  if (gantt) {
+    const legend = el('div', 'legend');
+    legend.innerHTML =
+      '<span><span class="swatch" style="background:var(--holiday)"></span>공휴일/휴일</span>' +
+      '<span><span class="swatch" style="background:var(--weekend)"></span>주말</span>' +
+      '<span><span class="swatch" style="background:var(--bar-new)"></span>할 일</span>' +
+      '<span><span class="swatch" style="background:var(--bar)"></span>진행 중</span>' +
+      '<span><span class="swatch" style="background:var(--bar-done)"></span>완료</span>' +
+      '<span><span class="swatch" style="background:#36b37e;width:3px"></span>오늘</span>';
+    right.appendChild(legend);
+  }
 
   return toolbar;
 }
@@ -771,6 +807,73 @@ function renderSaveFilterPanel() {
   return panel;
 }
 
+// ---------- 보기 프리셋 ----------
+const PRESET_KEYS = [
+  'view', 'sortKey', 'sortDir', 'zoom', 'zoomScale', 'layout', 'showVersions',
+  'statusCats', 'priorityFilter', 'typeFilter', 'labelFilter', 'overdueOnly', 'mineOnly',
+  'assigneeIds', 'includeUnassigned', 'selectedFilterId', 'customJql',
+];
+function captureConfig() {
+  const c = {};
+  for (const k of PRESET_KEYS) c[k] = JSON.parse(JSON.stringify(state[k]));
+  return c;
+}
+async function applyConfig(cfg) {
+  for (const k of PRESET_KEYS) if (k in cfg) state[k] = cfg[k];
+  try { await loadAll(); } catch (e) { showError(e); } // 서버 조건(JQL/담당자)도 반영
+}
+
+function renderPresetPanel() {
+  const panel = el('div', 'manage');
+  panel.appendChild(el('div', 'manage-title', '보기 프리셋 (그룹·정렬·필터·줌 한 세트)'));
+  const form = el('div', 'manage-form');
+  const nameInput = el('input');
+  nameInput.type = 'text';
+  nameInput.placeholder = '프리셋 이름';
+  const saveBtn = el('button', 'primary', '현재 보기 저장');
+  const msg = el('span', 'manage-msg');
+  saveBtn.onclick = async () => {
+    const name = nameInput.value.trim();
+    if (!name) { msg.textContent = '이름을 입력하세요.'; return; }
+    saveBtn.disabled = true;
+    const { presets, error } = await invoke('savePreset', { name, config: captureConfig() });
+    saveBtn.disabled = false;
+    if (error) { msg.textContent = error; return; }
+    state.presets = presets || state.presets;
+    nameInput.value = '';
+    render();
+  };
+  form.append(nameInput, saveBtn, msg);
+  panel.appendChild(form);
+
+  const names = Object.keys(state.presets).sort((a, b) => a.localeCompare(b));
+  if (!names.length) {
+    panel.appendChild(el('div', 'manage-empty', '저장된 프리셋이 없습니다.'));
+  } else {
+    const list = el('div', 'manage-list');
+    for (const n of names) {
+      const item = el('div', 'manage-item');
+      const nameEl = el('span', 'mi-name', n);
+      nameEl.style.cursor = 'pointer';
+      nameEl.onclick = () => applyConfig(state.presets[n]);
+      item.appendChild(nameEl);
+      const apply = el('button', 'mi-del', '적용');
+      apply.onclick = () => applyConfig(state.presets[n]);
+      const del = el('button', 'mi-del', '삭제');
+      del.onclick = async () => {
+        del.disabled = true;
+        const { presets } = await invoke('deletePreset', { name: n });
+        state.presets = presets || {};
+        render();
+      };
+      item.append(apply, del);
+      list.appendChild(item);
+    }
+    panel.appendChild(list);
+  }
+  return panel;
+}
+
 // ---------- 고급 필터 패널 ----------
 function renderAdvancedFilterPanel() {
   const panel = el('div', 'manage');
@@ -799,7 +902,8 @@ function renderAdvancedFilterPanel() {
   const uniq = (arr) => [...new Set(arr)].sort((a, b) => String(a).localeCompare(String(b)));
   const priorities = uniq(issues.map((i) => i.priority).filter(Boolean));
   const types = uniq(issues.map((i) => i.type).filter(Boolean));
-  const labels = uniq(issues.flatMap((i) => i.labels || []));
+  // 라벨: 사이트 전역 목록 우선, 없으면 로드된 이슈 기준
+  const labels = state.allLabels.length ? uniq(state.allLabels) : uniq(issues.flatMap((i) => i.labels || []));
 
   const toggle = (arrName) => (v, on) => {
     const arr = state[arrName];
@@ -834,6 +938,52 @@ function renderAdvancedFilterPanel() {
   };
   panel.appendChild(resetBtn);
   return panel;
+}
+
+// ---------- 테이블(리스트) 뷰 ----------
+function renderTable(issues) {
+  const wrap = el('div', 'table-wrap');
+  const tbl = el('table', 'issue-table');
+  const thead = el('thead');
+  const htr = el('tr');
+  for (const h of ['', '키', '요약', '유형', '상태', '담당자', '우선순위', '시작', '마감', '진척도']) {
+    htr.appendChild(el('th', null, h));
+  }
+  thead.appendChild(htr);
+  tbl.appendChild(thead);
+
+  const today = todayStr();
+  const tbody = el('tbody');
+  for (const it of issues) {
+    const tr = el('tr');
+    const overdue = it.due && it.due < today && it.statusCategory !== 'done';
+    // 색상 점
+    const tdC = el('td');
+    const dot = el('span', 'tbl-dot');
+    dot.style.background = state.colors[it.key] || statusColor(it);
+    tdC.appendChild(dot);
+    tr.appendChild(tdC);
+    // 키(링크)
+    const tdK = el('td');
+    const kEl = el('span', 'link', it.key);
+    kEl.style.cursor = 'pointer';
+    kEl.onclick = () => openIssue(it.key);
+    tdK.appendChild(kEl);
+    tr.appendChild(tdK);
+    tr.appendChild(el('td', null, it.summary || ''));
+    tr.appendChild(el('td', null, it.type || ''));
+    tr.appendChild(el('td', null, it.status || ''));
+    tr.appendChild(el('td', null, it.assigneeName || '미지정'));
+    tr.appendChild(el('td', null, it.priority || ''));
+    tr.appendChild(el('td', null, it.start || ''));
+    const tdDue = el('td', overdue ? 'tbl-overdue' : null, it.due || '');
+    tr.appendChild(tdDue);
+    tr.appendChild(el('td', null, it.progress != null ? `${it.progress}%` : ''));
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+  wrap.appendChild(tbl);
+  return wrap;
 }
 
 // 타임라인 우하단 떠있는 확대/축소 컨트롤
@@ -875,6 +1025,14 @@ function render(restoreScroll) {
     sfPanel.style.display = 'block';
   };
 
+  // 프리셋 패널 (toolbar '프리셋' 버튼으로 토글)
+  const prPanel = renderPresetPanel();
+  prPanel.style.display = 'none';
+  root().appendChild(prPanel);
+  document.getElementById('preset-btn').onclick = () => {
+    prPanel.style.display = prPanel.style.display === 'none' ? 'block' : 'none';
+  };
+
   // 고급 필터 패널 (state.advOpen에 따라 표시 — 필터 변경 후에도 열린 상태 유지)
   if (state.advOpen) root().appendChild(renderAdvancedFilterPanel());
 
@@ -889,6 +1047,11 @@ function render(restoreScroll) {
   const shown = sortIssues(statusFiltered(d.issues));
   if (shown.length === 0) {
     root().appendChild(el('div', 'empty', '선택한 필터 조건에 해당하는 이슈가 없습니다.'));
+    return;
+  }
+
+  if (state.layout === 'table') {
+    root().appendChild(renderTable(shown));
     return;
   }
 
@@ -947,6 +1110,7 @@ function issueTooltipBase(it) {
   tip.push(`• 상태: ${it.status || '-'}`);
   tip.push(`• 담당자: ${it.assigneeName || '미지정'}`);
   if (it.start || it.due) tip.push(`• 기간: ${it.start || it.due} ~ ${it.due || it.start}`);
+  if (it.blockedBy && it.blockedBy.length) tip.push(`• 🔗 차단 요소: ${it.blockedBy.join(', ')}`);
   return tip;
 }
 
@@ -1047,6 +1211,19 @@ function renderTimeline({ issues, rangeStart, totalDays }) {
     rows.appendChild(line);
   }
 
+  // 버전(릴리스) 마일스톤 수직선
+  if (state.showVersions) {
+    for (const v of state.versions) {
+      const off = dayDiff(rangeStart, v.releaseDate);
+      if (off < 0 || off >= totalDays) continue;
+      const vline = el('div', 'ver-line');
+      vline.style.left = `${off * W}px`;
+      vline.title = `🏁 ${v.name} (${v.releaseDate})`;
+      vline.appendChild(el('div', 'ver-tag', `🏁 ${v.name}`));
+      rows.appendChild(vline);
+    }
+  }
+
   const trackW = days.length * W;
 
   // 이슈 막대 행 생성 (depth = 들여쓰기 단계, opts.caret = 펼침/접힘 토글)
@@ -1070,6 +1247,11 @@ function renderTimeline({ issues, rangeStart, totalDays }) {
     }
     label.appendChild(el('span', 'key', it.key));
     label.appendChild(el('span', 'sum link', it.summary || ''));
+    if (it.blockedBy && it.blockedBy.length) {
+      const blk = el('span', 'row-blocked', '🔗');
+      blk.title = `차단 요소: ${it.blockedBy.join(', ')}`;
+      label.appendChild(blk);
+    }
     label.title = issueTooltipBase(it).concat('• 클릭: 이슈 열기').join('\n');
     label.onclick = () => openIssue(it.key);
 

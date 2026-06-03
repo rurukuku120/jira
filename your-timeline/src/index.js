@@ -1,5 +1,6 @@
 import Resolver from '@forge/resolver';
-import api, { route, fetch, storage } from '@forge/api';
+import api, { route, fetch } from '@forge/api';
+import { kvs } from '@forge/kvs';
 
 const resolver = new Resolver();
 
@@ -45,7 +46,7 @@ async function fetchYearHolidays(year) {
 /** 한국 공휴일 조회 (fromYear~toYear). 수동 추가분과 병합. 키 불필요. */
 resolver.define('getHolidays', async (req) => {
   const { fromYear, toYear } = req.payload || {};
-  const custom = (await storage.get(CUSTOM_HOLIDAY_KEY)) || {};
+  const custom = (await kvs.get(CUSTOM_HOLIDAY_KEY)) || {};
   const official = {};
   let apiError = null;
   if (fromYear && toYear) {
@@ -64,7 +65,7 @@ resolver.define('getHolidays', async (req) => {
 
 /** 수동 추가 공휴일 목록 조회 */
 resolver.define('listCustomHolidays', async () => {
-  const custom = (await storage.get(CUSTOM_HOLIDAY_KEY)) || {};
+  const custom = (await kvs.get(CUSTOM_HOLIDAY_KEY)) || {};
   return { custom };
 });
 
@@ -74,18 +75,18 @@ resolver.define('addCustomHoliday', async (req) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) {
     return { error: '날짜 형식이 올바르지 않습니다 (YYYY-MM-DD).' };
   }
-  const custom = (await storage.get(CUSTOM_HOLIDAY_KEY)) || {};
+  const custom = (await kvs.get(CUSTOM_HOLIDAY_KEY)) || {};
   custom[date] = (name && name.trim()) || '휴일';
-  await storage.set(CUSTOM_HOLIDAY_KEY, custom);
+  await kvs.set(CUSTOM_HOLIDAY_KEY, custom);
   return { custom };
 });
 
 /** 수동 공휴일 삭제. payload: { date } */
 resolver.define('removeCustomHoliday', async (req) => {
   const { date } = req.payload || {};
-  const custom = (await storage.get(CUSTOM_HOLIDAY_KEY)) || {};
+  const custom = (await kvs.get(CUSTOM_HOLIDAY_KEY)) || {};
   delete custom[date];
-  await storage.set(CUSTOM_HOLIDAY_KEY, custom);
+  await kvs.set(CUSTOM_HOLIDAY_KEY, custom);
   return { custom };
 });
 
@@ -106,6 +107,67 @@ resolver.define('listAssignees', async (req) => {
     return { assignees };
   } catch (e) {
     return { assignees: [], error: String(e) };
+  }
+});
+
+/** 프로젝트 버전(릴리스) 목록 — 마일스톤 수직선용 */
+resolver.define('listVersions', async (req) => {
+  const { projectKey } = req.payload || {};
+  if (!projectKey) return { versions: [] };
+  try {
+    const res = await api.asUser().requestJira(
+      route`/rest/api/3/project/${projectKey}/versions`,
+      { headers: { Accept: 'application/json' } }
+    );
+    const data = await res.json();
+    const versions = (Array.isArray(data) ? data : [])
+      .filter((v) => v.releaseDate)
+      .map((v) => ({ name: v.name, releaseDate: String(v.releaseDate).slice(0, 10), released: !!v.released }));
+    return { versions };
+  } catch (e) {
+    return { versions: [], error: String(e) };
+  }
+});
+
+const PRESET_KEY = 'view-presets'; // { name: configObj }
+
+/** 보기 프리셋 목록 조회 */
+resolver.define('getPresets', async () => {
+  const presets = (await kvs.get(PRESET_KEY)) || {};
+  return { presets };
+});
+
+/** 보기 프리셋 저장. payload: { name, config } */
+resolver.define('savePreset', async (req) => {
+  const { name, config } = req.payload || {};
+  const n = (name || '').trim();
+  if (!n) return { error: '프리셋 이름이 필요합니다.' };
+  const presets = (await kvs.get(PRESET_KEY)) || {};
+  presets[n] = config || {};
+  await kvs.set(PRESET_KEY, presets);
+  return { presets };
+});
+
+/** 보기 프리셋 삭제. payload: { name } */
+resolver.define('deletePreset', async (req) => {
+  const { name } = req.payload || {};
+  const presets = (await kvs.get(PRESET_KEY)) || {};
+  delete presets[name];
+  await kvs.set(PRESET_KEY, presets);
+  return { presets };
+});
+
+/** 사이트 전역 라벨 목록 (Jira 라벨은 사이트 전역 개념) */
+resolver.define('listLabels', async () => {
+  try {
+    const res = await api.asUser().requestJira(
+      route`/rest/api/3/label?maxResults=1000`,
+      { headers: { Accept: 'application/json' } }
+    );
+    const data = await res.json();
+    return { labels: Array.isArray(data.values) ? data.values : [] };
+  } catch (e) {
+    return { labels: [], error: String(e) };
   }
 });
 
@@ -187,7 +249,7 @@ resolver.define('getIssues', async (req) => {
 
   const fields = [
     'summary', 'duedate', 'status', 'issuetype', 'parent', 'assignee',
-    'priority', 'labels', 'components', 'created', 'aggregateprogress', 'progress',
+    'priority', 'labels', 'components', 'created', 'aggregateprogress', 'progress', 'issuelinks',
   ];
   if (startFieldId) fields.push(startFieldId);
 
@@ -223,6 +285,10 @@ resolver.define('getIssues', async (req) => {
       const prog = f.aggregateprogress || f.progress || {};
       const percent = prog.total > 0 ? Math.round((prog.progress / prog.total) * 100)
         : (typeof prog.percent === 'number' ? Math.round(prog.percent) : null);
+      // 의존성: 이 이슈를 막는(blockers) 이슈 키 목록
+      const blockedBy = (Array.isArray(f.issuelinks) ? f.issuelinks : [])
+        .filter((l) => l.type && /block/i.test(l.type.inward || '') && l.inwardIssue)
+        .map((l) => l.inwardIssue.key);
       return {
         key: it.key,
         summary: f.summary,
@@ -242,6 +308,7 @@ resolver.define('getIssues', async (req) => {
         assigneeId: a?.accountId || null,
         assigneeName: a?.displayName || null,
         assigneeAvatar: a?.avatarUrls?.['24x24'] || a?.avatarUrls?.['48x48'] || null,
+        blockedBy,
       };
     });
     return { issues, startFieldId, jql, truncated };
@@ -287,7 +354,7 @@ const ISSUE_COLOR_KEY = 'issue-colors'; // { issueKey: '#hex' }
 
 /** 이슈별 사용자 지정 색상 맵 조회 */
 resolver.define('getIssueColors', async () => {
-  const colors = (await storage.get(ISSUE_COLOR_KEY)) || {};
+  const colors = (await kvs.get(ISSUE_COLOR_KEY)) || {};
   return { colors };
 });
 
@@ -295,10 +362,10 @@ resolver.define('getIssueColors', async () => {
 resolver.define('setIssueColor', async (req) => {
   const { key, color } = req.payload || {};
   if (!key) return { error: 'key가 필요합니다.' };
-  const colors = (await storage.get(ISSUE_COLOR_KEY)) || {};
+  const colors = (await kvs.get(ISSUE_COLOR_KEY)) || {};
   if (color && /^#[0-9a-fA-F]{6}$/.test(color)) colors[key] = color;
   else delete colors[key];
-  await storage.set(ISSUE_COLOR_KEY, colors);
+  await kvs.set(ISSUE_COLOR_KEY, colors);
   return { colors };
 });
 
@@ -306,14 +373,14 @@ const PAGE_TITLE_KEY = 'page-title';
 
 /** 페이지 제목 조회 */
 resolver.define('getTitle', async () => {
-  const title = (await storage.get(PAGE_TITLE_KEY)) || '당신의 타임라인';
+  const title = (await kvs.get(PAGE_TITLE_KEY)) || '당신의 타임라인';
   return { title };
 });
 
 /** 페이지 제목 저장 */
 resolver.define('setTitle', async (req) => {
   const t = (req.payload && req.payload.title || '').trim();
-  await storage.set(PAGE_TITLE_KEY, t || '당신의 타임라인');
+  await kvs.set(PAGE_TITLE_KEY, t || '당신의 타임라인');
   return { title: t || '당신의 타임라인' };
 });
 

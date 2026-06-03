@@ -23,15 +23,14 @@ app:
 
 permissions:
   scopes:
-    - read:jira-work # 이슈 조회 (JQL) + 필드 메타
-    - write:jira-work # 바 드래그로 시작일/마감일 수정
+    - read:jira-work
+    - write:jira-work
     - read:jira-user
-    - storage:app # 수동 추가 공휴일 저장
+    - storage:app
   external:
     fetch:
       backend:
-        # 한국 공휴일 공개 API (키 불필요) egress 허용
-        - 'date.nager.at'
+        - address: date.nager.at
   content:
     styles:
       - unsafe-inline

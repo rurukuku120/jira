@@ -2459,6 +2459,8 @@
     filters: [],
     assignees: [],
     // 프로젝트 배정 가능 사용자 [{id, name}]
+    allLabels: [],
+    // 사이트 전역 라벨 목록
     selectedFilterId: "",
     customJql: "",
     zoom: "week",
@@ -2490,6 +2492,14 @@
     // 현재 사용자 accountId
     advOpen: false,
     // 고급 필터 패널 열림 상태
+    layout: "gantt",
+    // gantt | table
+    showVersions: true,
+    // 버전(마일스톤) 수직선 표시
+    versions: [],
+    // 프로젝트 버전 [{name, releaseDate, released}]
+    presets: {},
+    // 보기 프리셋 { name: config }
     title: "\uB2F9\uC2E0\uC758 \uD0C0\uC784\uB77C\uC778",
     collapsed: {},
     // { epicKey: true } 접힘 상태
@@ -2509,16 +2519,22 @@
       const context = await import_bridge.view.getContext();
       state.projectKey = context?.extension?.project?.key || context?.extension?.project?.id;
       state.myAccountId = context?.accountId || null;
-      const [{ filters }, { title }, asg, col] = await Promise.all([
+      const [{ filters }, { title }, asg, col, lbl, ver, pre] = await Promise.all([
         (0, import_bridge.invoke)("listFilters"),
         (0, import_bridge.invoke)("getTitle"),
         (0, import_bridge.invoke)("listAssignees", { projectKey: state.projectKey }),
-        (0, import_bridge.invoke)("getIssueColors")
+        (0, import_bridge.invoke)("getIssueColors"),
+        (0, import_bridge.invoke)("listLabels"),
+        (0, import_bridge.invoke)("listVersions", { projectKey: state.projectKey }),
+        (0, import_bridge.invoke)("getPresets")
       ]);
       state.filters = filters || [];
       state.title = title || "\uB2F9\uC2E0\uC758 \uD0C0\uC784\uB77C\uC778";
       state.assignees = asg && asg.assignees || [];
       state.colors = col && col.colors || {};
+      state.allLabels = lbl && lbl.labels || [];
+      state.versions = ver && ver.versions || [];
+      state.presets = pre && pre.presets || {};
       await loadAll();
     } catch (e) {
       root().innerHTML = `<div class="error">\uC624\uB958: ${e.message || e}</div>`;
@@ -2956,27 +2972,37 @@
       };
       left.appendChild(resetBtn);
     }
-    const viewSel = el("select");
-    viewSel.title = "\uADF8\uB8F9\uD654 \uAE30\uC900";
-    for (const [val, label] of [
-      ["flat", "\uADF8\uB8F9: \uC5C6\uC74C"],
-      ["assignee", "\uADF8\uB8F9: \uB2F4\uB2F9\uC790"],
-      ["epic", "\uADF8\uB8F9: \uC5D0\uD53D"],
-      ["tree", "\uADF8\uB8F9: \uD558\uC704 \uC791\uC5C5"],
-      ["priority", "\uADF8\uB8F9: \uC6B0\uC120\uC21C\uC704"],
-      ["type", "\uADF8\uB8F9: \uC720\uD615"],
-      ["label", "\uADF8\uB8F9: \uB77C\uBCA8"],
-      ["duebucket", "\uADF8\uB8F9: \uB9C8\uAC10 \uC2DC\uAE30"]
-    ]) {
-      const opt = new Option(label, val);
-      if (state.view === val) opt.selected = true;
-      viewSel.appendChild(opt);
-    }
-    viewSel.onchange = () => {
-      state.view = viewSel.value;
-      render();
+    const gantt = state.layout === "gantt";
+    const layoutBtn = el("button", null, gantt ? "\uD45C \uBCF4\uAE30" : "\uAC04\uD2B8 \uBCF4\uAE30");
+    layoutBtn.title = "\uAC04\uD2B8 \u2194 \uD45C \uC804\uD658";
+    layoutBtn.onclick = () => {
+      state.layout = gantt ? "table" : "gantt";
+      render(true);
     };
-    right.appendChild(viewSel);
+    right.appendChild(layoutBtn);
+    if (gantt) {
+      const viewSel = el("select");
+      viewSel.title = "\uADF8\uB8F9\uD654 \uAE30\uC900";
+      for (const [val, label] of [
+        ["flat", "\uADF8\uB8F9: \uC5C6\uC74C"],
+        ["assignee", "\uADF8\uB8F9: \uB2F4\uB2F9\uC790"],
+        ["epic", "\uADF8\uB8F9: \uC5D0\uD53D"],
+        ["tree", "\uADF8\uB8F9: \uD558\uC704 \uC791\uC5C5"],
+        ["priority", "\uADF8\uB8F9: \uC6B0\uC120\uC21C\uC704"],
+        ["type", "\uADF8\uB8F9: \uC720\uD615"],
+        ["label", "\uADF8\uB8F9: \uB77C\uBCA8"],
+        ["duebucket", "\uADF8\uB8F9: \uB9C8\uAC10 \uC2DC\uAE30"]
+      ]) {
+        const opt = new Option(label, val);
+        if (state.view === val) opt.selected = true;
+        viewSel.appendChild(opt);
+      }
+      viewSel.onchange = () => {
+        state.view = viewSel.value;
+        render();
+      };
+      right.appendChild(viewSel);
+    }
     const sortSel = el("select");
     sortSel.title = "\uC815\uB82C \uAE30\uC900";
     for (const [val, label] of [
@@ -3002,26 +3028,42 @@
       render();
     };
     right.appendChild(dirBtn);
-    const zoomBox = el("div", "zoom");
-    for (const k of ["week", "month", "quarter"]) {
-      const b = el("button", "zoom-btn" + (state.zoom === k ? " active" : ""), ZOOM[k].label);
-      b.onclick = () => {
-        state.zoom = k;
-        state.zoomScale = 1;
-        render(true);
-      };
-      zoomBox.appendChild(b);
+    if (gantt) {
+      const zoomBox = el("div", "zoom");
+      for (const k of ["week", "month", "quarter"]) {
+        const b = el("button", "zoom-btn" + (state.zoom === k ? " active" : ""), ZOOM[k].label);
+        b.onclick = () => {
+          state.zoom = k;
+          state.zoomScale = 1;
+          render(true);
+        };
+        zoomBox.appendChild(b);
+      }
+      right.appendChild(zoomBox);
+      const todayBtn = el("button", null, "\uC624\uB298");
+      todayBtn.onclick = () => scrollToToday();
+      right.appendChild(todayBtn);
+      if (state.versions.length) {
+        const verBtn = el("button", state.showVersions ? "active" : null, "\u{1F3C1} \uBC84\uC804");
+        verBtn.title = "\uBC84\uC804(\uB9B4\uB9AC\uC2A4) \uC218\uC9C1\uC120 \uD45C\uC2DC/\uC228\uAE40";
+        verBtn.onclick = () => {
+          state.showVersions = !state.showVersions;
+          render(true);
+        };
+        right.appendChild(verBtn);
+      }
     }
-    right.appendChild(zoomBox);
-    const todayBtn = el("button", null, "\uC624\uB298");
-    todayBtn.onclick = () => scrollToToday();
-    right.appendChild(todayBtn);
+    const presetBtn = el("button", null, "\uD504\uB9AC\uC14B");
+    presetBtn.id = "preset-btn";
+    right.appendChild(presetBtn);
     const manageBtn = el("button", null, "\uD734\uC77C \uAD00\uB9AC");
     manageBtn.id = "manage-btn";
     right.appendChild(manageBtn);
-    const legend = el("div", "legend");
-    legend.innerHTML = '<span><span class="swatch" style="background:var(--holiday)"></span>\uACF5\uD734\uC77C/\uD734\uC77C</span><span><span class="swatch" style="background:var(--weekend)"></span>\uC8FC\uB9D0</span><span><span class="swatch" style="background:var(--bar-new)"></span>\uD560 \uC77C</span><span><span class="swatch" style="background:var(--bar)"></span>\uC9C4\uD589 \uC911</span><span><span class="swatch" style="background:var(--bar-done)"></span>\uC644\uB8CC</span><span><span class="swatch" style="background:#36b37e;width:3px"></span>\uC624\uB298</span>';
-    right.appendChild(legend);
+    if (gantt) {
+      const legend = el("div", "legend");
+      legend.innerHTML = '<span><span class="swatch" style="background:var(--holiday)"></span>\uACF5\uD734\uC77C/\uD734\uC77C</span><span><span class="swatch" style="background:var(--weekend)"></span>\uC8FC\uB9D0</span><span><span class="swatch" style="background:var(--bar-new)"></span>\uD560 \uC77C</span><span><span class="swatch" style="background:var(--bar)"></span>\uC9C4\uD589 \uC911</span><span><span class="swatch" style="background:var(--bar-done)"></span>\uC644\uB8CC</span><span><span class="swatch" style="background:#36b37e;width:3px"></span>\uC624\uB298</span>';
+      right.appendChild(legend);
+    }
     return toolbar;
   }
   function startEditTitle(titleEl) {
@@ -3177,6 +3219,93 @@
     panel.appendChild(form);
     return panel;
   }
+  var PRESET_KEYS = [
+    "view",
+    "sortKey",
+    "sortDir",
+    "zoom",
+    "zoomScale",
+    "layout",
+    "showVersions",
+    "statusCats",
+    "priorityFilter",
+    "typeFilter",
+    "labelFilter",
+    "overdueOnly",
+    "mineOnly",
+    "assigneeIds",
+    "includeUnassigned",
+    "selectedFilterId",
+    "customJql"
+  ];
+  function captureConfig() {
+    const c = {};
+    for (const k of PRESET_KEYS) c[k] = JSON.parse(JSON.stringify(state[k]));
+    return c;
+  }
+  async function applyConfig(cfg) {
+    for (const k of PRESET_KEYS) if (k in cfg) state[k] = cfg[k];
+    try {
+      await loadAll();
+    } catch (e) {
+      showError(e);
+    }
+  }
+  function renderPresetPanel() {
+    const panel = el("div", "manage");
+    panel.appendChild(el("div", "manage-title", "\uBCF4\uAE30 \uD504\uB9AC\uC14B (\uADF8\uB8F9\xB7\uC815\uB82C\xB7\uD544\uD130\xB7\uC90C \uD55C \uC138\uD2B8)"));
+    const form = el("div", "manage-form");
+    const nameInput = el("input");
+    nameInput.type = "text";
+    nameInput.placeholder = "\uD504\uB9AC\uC14B \uC774\uB984";
+    const saveBtn = el("button", "primary", "\uD604\uC7AC \uBCF4\uAE30 \uC800\uC7A5");
+    const msg = el("span", "manage-msg");
+    saveBtn.onclick = async () => {
+      const name = nameInput.value.trim();
+      if (!name) {
+        msg.textContent = "\uC774\uB984\uC744 \uC785\uB825\uD558\uC138\uC694.";
+        return;
+      }
+      saveBtn.disabled = true;
+      const { presets, error } = await (0, import_bridge.invoke)("savePreset", { name, config: captureConfig() });
+      saveBtn.disabled = false;
+      if (error) {
+        msg.textContent = error;
+        return;
+      }
+      state.presets = presets || state.presets;
+      nameInput.value = "";
+      render();
+    };
+    form.append(nameInput, saveBtn, msg);
+    panel.appendChild(form);
+    const names = Object.keys(state.presets).sort((a, b) => a.localeCompare(b));
+    if (!names.length) {
+      panel.appendChild(el("div", "manage-empty", "\uC800\uC7A5\uB41C \uD504\uB9AC\uC14B\uC774 \uC5C6\uC2B5\uB2C8\uB2E4."));
+    } else {
+      const list = el("div", "manage-list");
+      for (const n of names) {
+        const item = el("div", "manage-item");
+        const nameEl = el("span", "mi-name", n);
+        nameEl.style.cursor = "pointer";
+        nameEl.onclick = () => applyConfig(state.presets[n]);
+        item.appendChild(nameEl);
+        const apply = el("button", "mi-del", "\uC801\uC6A9");
+        apply.onclick = () => applyConfig(state.presets[n]);
+        const del = el("button", "mi-del", "\uC0AD\uC81C");
+        del.onclick = async () => {
+          del.disabled = true;
+          const { presets } = await (0, import_bridge.invoke)("deletePreset", { name: n });
+          state.presets = presets || {};
+          render();
+        };
+        item.append(apply, del);
+        list.appendChild(item);
+      }
+      panel.appendChild(list);
+    }
+    return panel;
+  }
   function renderAdvancedFilterPanel() {
     const panel = el("div", "manage");
     panel.appendChild(el("div", "manage-title", "\uACE0\uAE09 \uD544\uD130"));
@@ -3201,7 +3330,7 @@
     const uniq = (arr) => [...new Set(arr)].sort((a, b) => String(a).localeCompare(String(b)));
     const priorities = uniq(issues.map((i) => i.priority).filter(Boolean));
     const types = uniq(issues.map((i) => i.type).filter(Boolean));
-    const labels = uniq(issues.flatMap((i) => i.labels || []));
+    const labels = state.allLabels.length ? uniq(state.allLabels) : uniq(issues.flatMap((i) => i.labels || []));
     const toggle = (arrName) => (v, on) => {
       const arr = state[arrName];
       state[arrName] = on ? [...arr, v] : arr.filter((x) => x !== v);
@@ -3238,6 +3367,47 @@
     };
     panel.appendChild(resetBtn);
     return panel;
+  }
+  function renderTable(issues) {
+    const wrap = el("div", "table-wrap");
+    const tbl = el("table", "issue-table");
+    const thead = el("thead");
+    const htr = el("tr");
+    for (const h of ["", "\uD0A4", "\uC694\uC57D", "\uC720\uD615", "\uC0C1\uD0DC", "\uB2F4\uB2F9\uC790", "\uC6B0\uC120\uC21C\uC704", "\uC2DC\uC791", "\uB9C8\uAC10", "\uC9C4\uCC99\uB3C4"]) {
+      htr.appendChild(el("th", null, h));
+    }
+    thead.appendChild(htr);
+    tbl.appendChild(thead);
+    const today = todayStr();
+    const tbody = el("tbody");
+    for (const it of issues) {
+      const tr = el("tr");
+      const overdue = it.due && it.due < today && it.statusCategory !== "done";
+      const tdC = el("td");
+      const dot = el("span", "tbl-dot");
+      dot.style.background = state.colors[it.key] || statusColor(it);
+      tdC.appendChild(dot);
+      tr.appendChild(tdC);
+      const tdK = el("td");
+      const kEl = el("span", "link", it.key);
+      kEl.style.cursor = "pointer";
+      kEl.onclick = () => openIssue(it.key);
+      tdK.appendChild(kEl);
+      tr.appendChild(tdK);
+      tr.appendChild(el("td", null, it.summary || ""));
+      tr.appendChild(el("td", null, it.type || ""));
+      tr.appendChild(el("td", null, it.status || ""));
+      tr.appendChild(el("td", null, it.assigneeName || "\uBBF8\uC9C0\uC815"));
+      tr.appendChild(el("td", null, it.priority || ""));
+      tr.appendChild(el("td", null, it.start || ""));
+      const tdDue = el("td", overdue ? "tbl-overdue" : null, it.due || "");
+      tr.appendChild(tdDue);
+      tr.appendChild(el("td", null, it.progress != null ? `${it.progress}%` : ""));
+      tbody.appendChild(tr);
+    }
+    tbl.appendChild(tbody);
+    wrap.appendChild(tbl);
+    return wrap;
   }
   function renderZoomFloat() {
     const box = el("div", "zoom-float");
@@ -3277,6 +3447,12 @@
       sfPanel = fresh;
       sfPanel.style.display = "block";
     };
+    const prPanel = renderPresetPanel();
+    prPanel.style.display = "none";
+    root().appendChild(prPanel);
+    document.getElementById("preset-btn").onclick = () => {
+      prPanel.style.display = prPanel.style.display === "none" ? "block" : "none";
+    };
     if (state.advOpen) root().appendChild(renderAdvancedFilterPanel());
     const d = state.data;
     if (!d || !d.issues || d.issues.length === 0) {
@@ -3288,6 +3464,10 @@
     const shown = sortIssues(statusFiltered(d.issues));
     if (shown.length === 0) {
       root().appendChild(el("div", "empty", "\uC120\uD0DD\uD55C \uD544\uD130 \uC870\uAC74\uC5D0 \uD574\uB2F9\uD558\uB294 \uC774\uC288\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4."));
+      return;
+    }
+    if (state.layout === "table") {
+      root().appendChild(renderTable(shown));
       return;
     }
     const area = el("div", "timeline-area");
@@ -3336,6 +3516,7 @@
     tip.push(`\u2022 \uC0C1\uD0DC: ${it.status || "-"}`);
     tip.push(`\u2022 \uB2F4\uB2F9\uC790: ${it.assigneeName || "\uBBF8\uC9C0\uC815"}`);
     if (it.start || it.due) tip.push(`\u2022 \uAE30\uAC04: ${it.start || it.due} ~ ${it.due || it.start}`);
+    if (it.blockedBy && it.blockedBy.length) tip.push(`\u2022 \u{1F517} \uCC28\uB2E8 \uC694\uC18C: ${it.blockedBy.join(", ")}`);
     return tip;
   }
   function statusColor(it) {
@@ -3423,6 +3604,17 @@
       line.style.left = `${tOff * W}px`;
       rows.appendChild(line);
     }
+    if (state.showVersions) {
+      for (const v of state.versions) {
+        const off = dayDiff(rangeStart, v.releaseDate);
+        if (off < 0 || off >= totalDays) continue;
+        const vline = el("div", "ver-line");
+        vline.style.left = `${off * W}px`;
+        vline.title = `\u{1F3C1} ${v.name} (${v.releaseDate})`;
+        vline.appendChild(el("div", "ver-tag", `\u{1F3C1} ${v.name}`));
+        rows.appendChild(vline);
+      }
+    }
     const trackW = days.length * W;
     function makeIssueRow(it, depth, opts) {
       opts = opts || {};
@@ -3447,6 +3639,11 @@
       }
       label.appendChild(el("span", "key", it.key));
       label.appendChild(el("span", "sum link", it.summary || ""));
+      if (it.blockedBy && it.blockedBy.length) {
+        const blk = el("span", "row-blocked", "\u{1F517}");
+        blk.title = `\uCC28\uB2E8 \uC694\uC18C: ${it.blockedBy.join(", ")}`;
+        label.appendChild(blk);
+      }
       label.title = issueTooltipBase(it).concat("\u2022 \uD074\uB9AD: \uC774\uC288 \uC5F4\uAE30").join("\n");
       label.onclick = () => openIssue(it.key);
       const goBtn = el("button", "row-goto", "\u{1F4C5}");
