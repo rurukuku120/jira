@@ -42,9 +42,11 @@ const state = {
   selectedFilterId: '',
   customJql: '',
   zoom: 'week',
+  zoomScale: 1,           // 확대/축소 배율 (+/- 버튼, 0.4~4)
   view: 'tree',           // tree | epic | flat
   assigneeIds: [],        // 선택된 담당자 accountId 배열
   includeUnassigned: false, // '할당되지 않음' 포함 여부
+  statusCats: [],         // 상태 범주 필터 (빈 배열=전체). 'new'|'indeterminate'|'done'
   title: '당신의 타임라인',
   collapsed: {},      // { epicKey: true } 접힘 상태
   data: null,         // 마지막 로드 결과 { issues, startFieldId, rangeStart, totalDays }
@@ -53,7 +55,8 @@ const state = {
 };
 
 const root = () => document.getElementById('root');
-const colW = () => ZOOM[state.zoom].w;
+const colW = () => Math.max(2, Math.round(ZOOM[state.zoom].w * state.zoomScale));
+const ZOOM_MIN = 0.4, ZOOM_MAX = 4;
 
 async function main() {
   try {
@@ -76,15 +79,34 @@ async function main() {
   }
 }
 
+// 로딩 오버레이
+let loadingEl = null;
+function showLoading() {
+  if (loadingEl) return;
+  loadingEl = el('div', 'load-overlay');
+  loadingEl.appendChild(el('div', 'load-spinner'));
+  document.body.appendChild(loadingEl);
+}
+function hideLoading() { if (loadingEl) { loadingEl.remove(); loadingEl = null; } }
+
 // 필터/JQL로 이슈 조회 → 범위 계산 → 공휴일 조회 → 렌더
 async function loadAll() {
+  showLoading();
+  try {
+    await loadAllInner();
+  } finally {
+    hideLoading();
+  }
+}
+
+async function loadAllInner() {
   let jql = state.customJql.trim();
   if (!jql && state.selectedFilterId) {
     // 저장된 필터는 JQL 텍스트 대신 'filter = ID'로 직접 조회(의미 100% 보존)
     jql = `filter = ${state.selectedFilterId}`;
   }
 
-  const { issues, startFieldId, error: issueErr } = await invoke('getIssues', {
+  const { issues, startFieldId, truncated, error: issueErr } = await invoke('getIssues', {
     projectKey: state.projectKey,
     jql: jql || undefined,
     assignees: state.assigneeIds,
@@ -93,7 +115,7 @@ async function loadAll() {
   if (issueErr) throw new Error(issueErr);
 
   if (!issues || issues.length === 0) {
-    state.data = { issues: [], startFieldId };
+    state.data = { issues: [], startFieldId, truncated: false };
     render();
     return;
   }
@@ -117,7 +139,7 @@ async function loadAll() {
   const fromYear = Number(rangeStart.slice(0, 4));
   const toYear = Number(rangeEnd.slice(0, 4));
 
-  state.data = { issues, startFieldId, rangeStart, totalDays };
+  state.data = { issues, startFieldId, rangeStart, totalDays, truncated: !!truncated };
 
   const { holidays, custom, error: holErr } = await invoke('getHolidays', { fromYear, toYear });
   if (holErr) console.warn('휴일 조회 경고:', holErr);
@@ -247,6 +269,73 @@ function renderAssigneePicker() {
   return wrap;
 }
 
+// 상태 범주 정의 (Jira statusCategory key 기준)
+const STATUS_CATS = [
+  { key: 'new', label: '해야 할 일' },
+  { key: 'indeterminate', label: '진행 중' },
+  { key: 'done', label: '완료' },
+];
+
+// 상태 범주 필터 적용
+function statusFiltered(issues) {
+  if (!state.statusCats.length) return issues;
+  return issues.filter((it) => state.statusCats.includes(it.statusCategory));
+}
+
+// 상태 범주 피커 (체크박스 다중 선택, 클라이언트 측 필터)
+function renderStatusPicker() {
+  const wrap = el('div', 'asg-wrap');
+  const btn = el('button', 'asg-btn');
+  const n = state.statusCats.length;
+  const label = n === 0 ? '상태 범주: 전체'
+    : n === 1 ? `상태: ${(STATUS_CATS.find((c) => c.key === state.statusCats[0]) || {}).label}`
+    : `상태: ${n}개`;
+  btn.appendChild(el('span', 'asg-btn-label', label));
+  btn.appendChild(el('span', 'asg-caret', '▾'));
+  wrap.appendChild(btn);
+
+  const pop = el('div', 'asg-pop');
+  pop.style.display = 'none';
+  wrap.appendChild(pop);
+
+  const list = el('div', 'asg-list');
+  const sel = new Set(state.statusCats);
+  for (const c of STATUS_CATS) {
+    const row = el('label', 'asg-row');
+    const cb = el('input');
+    cb.type = 'checkbox';
+    cb.checked = sel.has(c.key);
+    cb.onchange = () => { cb.checked ? sel.add(c.key) : sel.delete(c.key); };
+    row.appendChild(cb);
+    const badge = el('span', 'st-badge st-' + c.key, c.label);
+    row.appendChild(badge);
+    list.appendChild(row);
+  }
+  pop.appendChild(list);
+
+  const foot = el('div', 'asg-foot');
+  const clearBtn = el('button', 'asg-clear', '선택 지우기');
+  clearBtn.onclick = () => { sel.clear(); for (const r of list.querySelectorAll('input')) r.checked = false; };
+  const applyBtn = el('button', 'asg-apply primary', '적용');
+  foot.append(clearBtn, applyBtn);
+  pop.appendChild(foot);
+
+  const onDocDown = (ev) => { if (!wrap.contains(ev.target)) closePop(); };
+  function closePop() { pop.style.display = 'none'; document.removeEventListener('mousedown', onDocDown); }
+  function openPop() { pop.style.display = 'block'; document.addEventListener('mousedown', onDocDown); }
+  applyBtn.onclick = () => {
+    const next = STATUS_CATS.map((c) => c.key).filter((k) => sel.has(k));
+    closePop();
+    const changed = next.length !== state.statusCats.length || next.some((k) => !state.statusCats.includes(k));
+    if (!changed) return;
+    state.statusCats = next;
+    render();
+  };
+  btn.onclick = () => { pop.style.display === 'none' ? openPop() : closePop(); };
+
+  return wrap;
+}
+
 function dayMeta(dateStr) {
   const dow = parse(dateStr).getDay();
   const isWeekend = dow === 0 || dow === 6;
@@ -257,12 +346,30 @@ function dayMeta(dateStr) {
 // ---------- 툴바 ----------
 function renderToolbar() {
   const toolbar = el('div', 'toolbar');
+  // 좌: 필터류 / 우: 보기 옵션·건수·범례
+  const left = el('div', 'tb-group tb-left');
+  const right = el('div', 'tb-group tb-right');
+  toolbar.append(left, right);
+
+  // 이슈 건수 + 한도 경고 (제일 왼쪽)
+  const d = state.data;
+  if (d && d.issues) {
+    const total = d.issues.length;
+    const shown = statusFiltered(d.issues).length;
+    const cnt = el('div', 'tb-count', shown === total ? `${total}건` : `${shown}/${total}건`);
+    if (d.truncated) {
+      const w = el('span', 'tb-warn', ' ⚠ 1000+');
+      w.title = '이슈가 1000건을 초과해 일부만 표시됩니다. JQL/필터로 범위를 좁혀 주세요.';
+      cnt.appendChild(w);
+    }
+    left.appendChild(cnt);
+  }
 
   // 편집 가능한 제목
   const titleEl = el('strong', 'page-title', state.title);
   titleEl.title = '클릭하여 제목 편집';
   titleEl.onclick = () => startEditTitle(titleEl);
-  toolbar.appendChild(titleEl);
+  left.appendChild(titleEl);
 
   // 필터 드롭다운
   const sel = el('select');
@@ -277,9 +384,10 @@ function renderToolbar() {
     state.customJql = '';
     state.assigneeIds = [];
     state.includeUnassigned = false;
+    state.statusCats = [];
     try { await loadAll(); } catch (e) { showError(e); }
   };
-  toolbar.appendChild(sel);
+  left.appendChild(sel);
 
   // JQL 직접 입력 (여러 줄 자동 높이)
   const jqlInput = el('textarea');
@@ -309,18 +417,33 @@ function renderToolbar() {
       try { await loadAll(); } catch (e) { showError(e); }
     }
   };
-  toolbar.appendChild(jqlInput);
+  left.appendChild(jqlInput);
   setTimeout(autoGrow, 0);
 
   // 현재 JQL을 Jira 저장 필터로 만들기
   const saveFilterBtn = el('button', null, '필터 저장');
   saveFilterBtn.id = 'save-filter-btn';
   saveFilterBtn.title = '현재 JQL을 Jira 저장 필터로 만들기';
-  toolbar.appendChild(saveFilterBtn);
+  left.appendChild(saveFilterBtn);
 
   // 담당자 필터 (Jira식 검색 + 다중 선택 피커)
-  toolbar.appendChild(renderAssigneePicker());
+  left.appendChild(renderAssigneePicker());
 
+  // 상태 범주 필터 (해야 할 일 / 진행 중 / 완료)
+  left.appendChild(renderStatusPicker());
+
+  // 필터 초기화 (필터/담당자/상태가 걸려 있을 때만)
+  if (state.customJql || state.selectedFilterId || state.assigneeIds.length || state.includeUnassigned || state.statusCats.length) {
+    const resetBtn = el('button', 'tb-reset', '필터 초기화');
+    resetBtn.onclick = async () => {
+      state.customJql = ''; state.selectedFilterId = '';
+      state.assigneeIds = []; state.includeUnassigned = false; state.statusCats = [];
+      try { await loadAll(); } catch (e) { showError(e); }
+    };
+    left.appendChild(resetBtn);
+  }
+
+  // ----- 우측 그룹 -----
   // 보기 방식 (계층/에픽별/평면)
   const viewSel = el('select');
   viewSel.title = '보기 방식';
@@ -330,37 +453,37 @@ function renderToolbar() {
     viewSel.appendChild(opt);
   }
   viewSel.onchange = () => { state.view = viewSel.value; render(); };
-  toolbar.appendChild(viewSel);
+  right.appendChild(viewSel);
 
   // 줌 버튼 (주/개월/분기)
   const zoomBox = el('div', 'zoom');
   for (const k of ['week', 'month', 'quarter']) {
     const b = el('button', 'zoom-btn' + (state.zoom === k ? ' active' : ''), ZOOM[k].label);
-    b.onclick = () => { state.zoom = k; render(true); };
+    b.onclick = () => { state.zoom = k; state.zoomScale = 1; render(true); };
     zoomBox.appendChild(b);
   }
-  toolbar.appendChild(zoomBox);
+  right.appendChild(zoomBox);
 
   // 오늘로 이동
   const todayBtn = el('button', null, '오늘');
   todayBtn.onclick = () => scrollToToday();
-  toolbar.appendChild(todayBtn);
+  right.appendChild(todayBtn);
 
   // 휴일 관리
   const manageBtn = el('button', null, '휴일 관리');
   manageBtn.id = 'manage-btn';
-  toolbar.appendChild(manageBtn);
+  right.appendChild(manageBtn);
 
   // 범례
   const legend = el('div', 'legend');
   legend.innerHTML =
     '<span><span class="swatch" style="background:var(--holiday)"></span>공휴일/휴일</span>' +
     '<span><span class="swatch" style="background:var(--weekend)"></span>주말</span>' +
-    '<span><span class="swatch" style="background:var(--bar)"></span>진행</span>' +
-    '<span><span class="swatch" style="background:var(--bar-done)"></span>완료</span>' +
     '<span><span class="swatch" style="background:var(--bar-new)"></span>할 일</span>' +
+    '<span><span class="swatch" style="background:var(--bar)"></span>진행 중</span>' +
+    '<span><span class="swatch" style="background:var(--bar-done)"></span>완료</span>' +
     '<span><span class="swatch" style="background:#36b37e;width:3px"></span>오늘</span>';
-  toolbar.appendChild(legend);
+  right.appendChild(legend);
 
   return toolbar;
 }
@@ -446,16 +569,40 @@ function currentJql() {
   return '';
 }
 
+// 상태 범주 키 → JQL statusCategory ID (언어 무관)
+const STATUS_CAT_ID = { new: 2, indeterminate: 4, done: 3 };
+
+// 저장용 유효 JQL: 기본 JQL + 담당자 + 상태 범주 조건을 결합
+function effectiveJqlForSave() {
+  let jql = currentJql();
+  if (!jql) return '';
+  // 담당자
+  const inList = state.assigneeIds.map((a) => `"${a}"`).join(', ');
+  if (inList && state.includeUnassigned) jql += ` AND (assignee in (${inList}) OR assignee is EMPTY)`;
+  else if (inList) jql += ` AND assignee in (${inList})`;
+  else if (state.includeUnassigned) jql += ' AND assignee is EMPTY';
+  // 상태 범주
+  if (state.statusCats.length) {
+    const ids = state.statusCats.map((k) => STATUS_CAT_ID[k]).filter(Boolean);
+    if (ids.length) jql += ` AND statusCategory in (${ids.join(', ')})`;
+  }
+  return jql;
+}
+
 function renderSaveFilterPanel() {
   const panel = el('div', 'manage');
   panel.appendChild(el('div', 'manage-title', '현재 JQL을 필터로 저장'));
 
-  const jql = currentJql();
+  const jql = effectiveJqlForSave();
   if (!jql) {
     panel.appendChild(el('div', 'manage-empty', '저장할 JQL이 없습니다. JQL을 직접 입력한 뒤 저장하세요.'));
     return panel;
   }
 
+  // 담당자/상태 필터가 결합됐으면 안내
+  if (state.assigneeIds.length || state.includeUnassigned || state.statusCats.length) {
+    panel.appendChild(el('div', 'sf-note', '※ 현재 담당자·상태 범주 필터가 JQL에 포함되어 저장됩니다.'));
+  }
   panel.appendChild(el('div', 'sf-jql', jql));
 
   const form = el('div', 'manage-form');
@@ -482,10 +629,13 @@ function renderSaveFilterPanel() {
     });
     saveBtn.disabled = false;
     if (error) { msg.textContent = error; return; }
-    // 필터 목록에 추가하고 그 필터로 선택 전환
+    // 필터 목록에 추가하고 그 필터로 선택 전환 (조건은 필터에 포함됐으므로 개별 필터 초기화)
     state.filters = [...state.filters, filter].sort((a, b) => a.name.localeCompare(b.name));
     state.selectedFilterId = String(filter.id);
     state.customJql = '';
+    state.assigneeIds = [];
+    state.includeUnassigned = false;
+    state.statusCats = [];
     msg.textContent = '저장됨!';
     try { await loadAll(); } catch (e) { showError(e); }
   };
@@ -493,6 +643,20 @@ function renderSaveFilterPanel() {
   form.append(nameInput, globalWrap, saveBtn, msg);
   panel.appendChild(form);
   return panel;
+}
+
+// 타임라인 우하단 떠있는 확대/축소 컨트롤
+function renderZoomFloat() {
+  const box = el('div', 'zoom-float');
+  const setScale = (s) => { state.zoomScale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s)); render(true); };
+  const outBtn = el('button', 'zoom-btn', '−');
+  outBtn.title = '축소';
+  outBtn.onclick = () => setScale(state.zoomScale / 1.25);
+  const inBtn = el('button', 'zoom-btn', '+');
+  inBtn.title = '확대';
+  inBtn.onclick = () => setScale(state.zoomScale * 1.25);
+  box.append(outBtn, inBtn);
+  return box;
 }
 
 // ---------- 메인 렌더 ----------
@@ -528,7 +692,17 @@ function render(restoreScroll) {
     return;
   }
 
-  root().appendChild(renderTimeline(d));
+  const shown = statusFiltered(d.issues);
+  if (shown.length === 0) {
+    root().appendChild(el('div', 'empty', '선택한 상태 범주에 해당하는 이슈가 없습니다.'));
+    return;
+  }
+
+  // 타임라인 + 우하단 떠있는 확대/축소 컨트롤
+  const area = el('div', 'timeline-area');
+  area.appendChild(renderTimeline({ ...d, issues: shown }));
+  area.appendChild(renderZoomFloat());
+  root().appendChild(area);
   if (prevScroll != null) {
     const w = document.querySelector('.timeline-wrap');
     if (w) w.scrollLeft = prevScroll;
@@ -647,7 +821,9 @@ function renderTimeline({ issues, rangeStart, totalDays }) {
     if (s && e) {
       const offset = Math.max(0, dayDiff(rangeStart, s));
       const span = Math.max(1, dayDiff(s, e) + 1);
-      const bar = el('div', barClass(it) + ' clickable', state.zoom === 'week' ? (it.summary || it.key) : '');
+      // 바 라벨: 주=요약, 개월=key, 분기=없음(너무 좁음). overflow는 CSS로 클립.
+      const barText = state.zoom === 'week' ? (it.summary || it.key) : state.zoom === 'month' ? it.key : '';
+      const bar = el('div', barClass(it) + ' clickable', barText);
       bar.style.left = `${offset * W + 1}px`;
       bar.style.width = `${span * W - 2}px`;
       bar.title = `${it.key} · ${s} ~ ${e} · ${it.status} (클릭하여 열기 · 양끝/가운데 드래그로 기간 변경)`;

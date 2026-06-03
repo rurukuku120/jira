@@ -185,28 +185,42 @@ resolver.define('getIssues', async (req) => {
 
   const jql = `(${where}) AND duedate IS NOT EMPTY${assigneeClause}${order}`;
 
-  const fields = ['summary', 'duedate', 'status', 'issuetype', 'created', 'parent', 'assignee'];
+  const fields = ['summary', 'duedate', 'status', 'issuetype', 'parent', 'assignee'];
   if (startFieldId) fields.push(startFieldId);
 
+  const MAX_ISSUES = 1000; // 페이지네이션 상한(이 이상은 truncated 처리)
   try {
-    const res = await api
-      .asUser()
-      .requestJira(route`/rest/api/3/search/jql`, {
+    const raw = [];
+    let nextPageToken;
+    let truncated = false;
+    do {
+      const body = { jql, fields, maxResults: 100 };
+      if (nextPageToken) body.nextPageToken = nextPageToken;
+      const res = await api.asUser().requestJira(route`/rest/api/3/search/jql`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ jql, fields, maxResults: 100 }),
+        body: JSON.stringify(body),
       });
-    const data = await res.json();
+      if (!res.ok) {
+        const t = await res.text();
+        return { issues: [], error: `이슈 조회 실패 (${res.status}): ${t}` };
+      }
+      const data = await res.json();
+      for (const it of (data.issues || [])) raw.push(it);
+      nextPageToken = data.isLast ? undefined : data.nextPageToken;
+      if (raw.length >= MAX_ISSUES) { truncated = !!nextPageToken; break; }
+    } while (nextPageToken);
 
-    const issues = (data.issues || []).map((it) => {
+    const issues = raw.slice(0, MAX_ISSUES).map((it) => {
       const f = it.fields || {};
-      const start = (startFieldId && f[startFieldId]) || f.created;
+      // 시작일 필드가 있을 때만 시작일 사용(없으면 마감일 기준 단일 막대 → 생성일로 왜곡 방지)
+      const startVal = startFieldId ? f[startFieldId] : null;
       const parent = f.parent;
       const a = f.assignee;
       return {
         key: it.key,
         summary: f.summary,
-        start: start ? String(start).slice(0, 10) : null,
+        start: startVal ? String(startVal).slice(0, 10) : null,
         due: f.duedate ? String(f.duedate).slice(0, 10) : null,
         status: f.status?.name || '',
         statusCategory: f.status?.statusCategory?.key || 'new', // new | indeterminate | done
@@ -217,7 +231,7 @@ resolver.define('getIssues', async (req) => {
         assigneeName: a?.displayName || null,
       };
     });
-    return { issues, startFieldId, jql };
+    return { issues, startFieldId, jql, truncated };
   } catch (e) {
     return { issues: [], error: String(e) };
   }

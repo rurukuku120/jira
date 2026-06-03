@@ -43,7 +43,14 @@ body {
   display: flex; align-items: center; gap: 12px;
   padding: 10px 12px; border-bottom: 1px solid var(--grid); flex-wrap: wrap;
 }
-.toolbar .legend { display: flex; gap: 14px; margin-left: auto; color: var(--subtle); flex-wrap: wrap; }
+/* 좌(필터류) / 우(보기 옵션·건수·범례) 그룹 */
+.tb-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tb-left { flex: 1 1 auto; }
+.tb-right { margin-left: auto; gap: 10px; }
+.tb-reset { color: var(--subtle); }
+.tb-count { font-size: 12px; color: var(--subtle); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tb-warn { color: var(--holiday-line); font-weight: 700; cursor: help; }
+.toolbar .legend { display: flex; gap: 14px; color: var(--subtle); flex-wrap: wrap; }
 .legend .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
 .toolbar select, .toolbar button {
   font-size: 13px; padding: 4px 8px; border: 1px solid var(--grid);
@@ -62,7 +69,16 @@ body {
 .zoom-btn:last-child { border-right: none; }
 .zoom-btn.active { background: var(--bar); color: #fff; }
 
+.timeline-area { position: relative; }
 .timeline-wrap { overflow: auto; max-height: 78vh; border-top: 1px solid var(--grid); }
+
+/* 우하단 떠있는 확대/축소 컨트롤 */
+.zoom-float {
+  position: absolute; right: 16px; bottom: 16px; z-index: 8;
+  display: inline-flex; border: 1px solid var(--grid); border-radius: 8px; overflow: hidden;
+  background: var(--bg); box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+}
+.zoom-float .zoom-btn { padding: 6px 14px; font-size: 16px; line-height: 1; }
 .timeline { position: relative; width: max-content; --col-w: 34px; }
 
 /* 헤더 */
@@ -167,10 +183,22 @@ button.primary:disabled { opacity: .5; }
 .asg-clear { background: var(--bg); color: var(--subtle); border: 1px solid var(--grid); font-size: 12px; padding: 4px 8px; }
 .asg-apply { font-size: 12px; padding: 4px 12px; }
 
+/* 상태 범주 배지 */
+.st-badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 3px; color: #fff; line-height: 1.4; }
+.st-new { background: var(--bar-new); }
+.st-indeterminate { background: var(--bar); }
+.st-done { background: var(--bar-done); }
+
 /* 필터 저장 패널 */
 .sf-jql { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; background: var(--bg); border: 1px solid var(--grid); border-radius: 4px; padding: 6px 8px; margin-bottom: 8px; white-space: pre-wrap; word-break: break-word; max-width: 720px; color: var(--text); }
 .sf-global { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text); cursor: pointer; user-select: none; }
 .sf-global input { cursor: pointer; }
+.sf-note { font-size: 12px; color: var(--subtle); margin-bottom: 6px; }
+
+/* 로딩 오버레이 */
+.load-overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.12); }
+.load-spinner { width: 28px; height: 28px; border: 3px solid var(--grid); border-top-color: var(--bar); border-radius: 50%; animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .clickable { cursor: pointer; }
 .bar.clickable:hover { filter: brightness(1.1); outline: 2px solid rgba(255,255,255,0.6); }

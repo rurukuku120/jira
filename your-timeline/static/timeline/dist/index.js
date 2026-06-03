@@ -2462,12 +2462,16 @@
     selectedFilterId: "",
     customJql: "",
     zoom: "week",
+    zoomScale: 1,
+    // 확대/축소 배율 (+/- 버튼, 0.4~4)
     view: "tree",
     // tree | epic | flat
     assigneeIds: [],
     // 선택된 담당자 accountId 배열
     includeUnassigned: false,
     // '할당되지 않음' 포함 여부
+    statusCats: [],
+    // 상태 범주 필터 (빈 배열=전체). 'new'|'indeterminate'|'done'
     title: "\uB2F9\uC2E0\uC758 \uD0C0\uC784\uB77C\uC778",
     collapsed: {},
     // { epicKey: true } 접힘 상태
@@ -2477,7 +2481,9 @@
     custom: {}
   };
   var root = () => document.getElementById("root");
-  var colW = () => ZOOM[state.zoom].w;
+  var colW = () => Math.max(2, Math.round(ZOOM[state.zoom].w * state.zoomScale));
+  var ZOOM_MIN = 0.4;
+  var ZOOM_MAX = 4;
   async function main() {
     try {
       const context = await import_bridge.view.getContext();
@@ -2495,12 +2501,33 @@
       root().innerHTML = `<div class="error">\uC624\uB958: ${e.message || e}</div>`;
     }
   }
+  var loadingEl = null;
+  function showLoading() {
+    if (loadingEl) return;
+    loadingEl = el("div", "load-overlay");
+    loadingEl.appendChild(el("div", "load-spinner"));
+    document.body.appendChild(loadingEl);
+  }
+  function hideLoading() {
+    if (loadingEl) {
+      loadingEl.remove();
+      loadingEl = null;
+    }
+  }
   async function loadAll() {
+    showLoading();
+    try {
+      await loadAllInner();
+    } finally {
+      hideLoading();
+    }
+  }
+  async function loadAllInner() {
     let jql = state.customJql.trim();
     if (!jql && state.selectedFilterId) {
       jql = `filter = ${state.selectedFilterId}`;
     }
-    const { issues, startFieldId, error: issueErr } = await (0, import_bridge.invoke)("getIssues", {
+    const { issues, startFieldId, truncated, error: issueErr } = await (0, import_bridge.invoke)("getIssues", {
       projectKey: state.projectKey,
       jql: jql || void 0,
       assignees: state.assigneeIds,
@@ -2508,7 +2535,7 @@
     });
     if (issueErr) throw new Error(issueErr);
     if (!issues || issues.length === 0) {
-      state.data = { issues: [], startFieldId };
+      state.data = { issues: [], startFieldId, truncated: false };
       render();
       return;
     }
@@ -2528,7 +2555,7 @@
     const totalDays = dayDiff(rangeStart, rangeEnd) + 1;
     const fromYear = Number(rangeStart.slice(0, 4));
     const toYear = Number(rangeEnd.slice(0, 4));
-    state.data = { issues, startFieldId, rangeStart, totalDays };
+    state.data = { issues, startFieldId, rangeStart, totalDays, truncated: !!truncated };
     const { holidays, custom, error: holErr } = await (0, import_bridge.invoke)("getHolidays", { fromYear, toYear });
     if (holErr) console.warn("\uD734\uC77C \uC870\uD68C \uACBD\uACE0:", holErr);
     state.holidays = holidays || {};
@@ -2646,6 +2673,75 @@
     };
     return wrap;
   }
+  var STATUS_CATS = [
+    { key: "new", label: "\uD574\uC57C \uD560 \uC77C" },
+    { key: "indeterminate", label: "\uC9C4\uD589 \uC911" },
+    { key: "done", label: "\uC644\uB8CC" }
+  ];
+  function statusFiltered(issues) {
+    if (!state.statusCats.length) return issues;
+    return issues.filter((it) => state.statusCats.includes(it.statusCategory));
+  }
+  function renderStatusPicker() {
+    const wrap = el("div", "asg-wrap");
+    const btn = el("button", "asg-btn");
+    const n = state.statusCats.length;
+    const label = n === 0 ? "\uC0C1\uD0DC \uBC94\uC8FC: \uC804\uCCB4" : n === 1 ? `\uC0C1\uD0DC: ${(STATUS_CATS.find((c) => c.key === state.statusCats[0]) || {}).label}` : `\uC0C1\uD0DC: ${n}\uAC1C`;
+    btn.appendChild(el("span", "asg-btn-label", label));
+    btn.appendChild(el("span", "asg-caret", "\u25BE"));
+    wrap.appendChild(btn);
+    const pop = el("div", "asg-pop");
+    pop.style.display = "none";
+    wrap.appendChild(pop);
+    const list = el("div", "asg-list");
+    const sel = new Set(state.statusCats);
+    for (const c of STATUS_CATS) {
+      const row = el("label", "asg-row");
+      const cb = el("input");
+      cb.type = "checkbox";
+      cb.checked = sel.has(c.key);
+      cb.onchange = () => {
+        cb.checked ? sel.add(c.key) : sel.delete(c.key);
+      };
+      row.appendChild(cb);
+      const badge = el("span", "st-badge st-" + c.key, c.label);
+      row.appendChild(badge);
+      list.appendChild(row);
+    }
+    pop.appendChild(list);
+    const foot = el("div", "asg-foot");
+    const clearBtn = el("button", "asg-clear", "\uC120\uD0DD \uC9C0\uC6B0\uAE30");
+    clearBtn.onclick = () => {
+      sel.clear();
+      for (const r of list.querySelectorAll("input")) r.checked = false;
+    };
+    const applyBtn = el("button", "asg-apply primary", "\uC801\uC6A9");
+    foot.append(clearBtn, applyBtn);
+    pop.appendChild(foot);
+    const onDocDown = (ev) => {
+      if (!wrap.contains(ev.target)) closePop();
+    };
+    function closePop() {
+      pop.style.display = "none";
+      document.removeEventListener("mousedown", onDocDown);
+    }
+    function openPop() {
+      pop.style.display = "block";
+      document.addEventListener("mousedown", onDocDown);
+    }
+    applyBtn.onclick = () => {
+      const next = STATUS_CATS.map((c) => c.key).filter((k) => sel.has(k));
+      closePop();
+      const changed = next.length !== state.statusCats.length || next.some((k) => !state.statusCats.includes(k));
+      if (!changed) return;
+      state.statusCats = next;
+      render();
+    };
+    btn.onclick = () => {
+      pop.style.display === "none" ? openPop() : closePop();
+    };
+    return wrap;
+  }
   function dayMeta(dateStr) {
     const dow = parse(dateStr).getDay();
     const isWeekend = dow === 0 || dow === 6;
@@ -2654,10 +2750,25 @@
   }
   function renderToolbar() {
     const toolbar = el("div", "toolbar");
+    const left = el("div", "tb-group tb-left");
+    const right = el("div", "tb-group tb-right");
+    toolbar.append(left, right);
+    const d = state.data;
+    if (d && d.issues) {
+      const total = d.issues.length;
+      const shown = statusFiltered(d.issues).length;
+      const cnt = el("div", "tb-count", shown === total ? `${total}\uAC74` : `${shown}/${total}\uAC74`);
+      if (d.truncated) {
+        const w = el("span", "tb-warn", " \u26A0 1000+");
+        w.title = "\uC774\uC288\uAC00 1000\uAC74\uC744 \uCD08\uACFC\uD574 \uC77C\uBD80\uB9CC \uD45C\uC2DC\uB429\uB2C8\uB2E4. JQL/\uD544\uD130\uB85C \uBC94\uC704\uB97C \uC881\uD600 \uC8FC\uC138\uC694.";
+        cnt.appendChild(w);
+      }
+      left.appendChild(cnt);
+    }
     const titleEl = el("strong", "page-title", state.title);
     titleEl.title = "\uD074\uB9AD\uD558\uC5EC \uC81C\uBAA9 \uD3B8\uC9D1";
     titleEl.onclick = () => startEditTitle(titleEl);
-    toolbar.appendChild(titleEl);
+    left.appendChild(titleEl);
     const sel = el("select");
     sel.appendChild(new Option("\uD504\uB85C\uC81D\uD2B8 \uC804\uCCB4", ""));
     for (const f of state.filters) {
@@ -2670,13 +2781,14 @@
       state.customJql = "";
       state.assigneeIds = [];
       state.includeUnassigned = false;
+      state.statusCats = [];
       try {
         await loadAll();
       } catch (e) {
         showError(e);
       }
     };
-    toolbar.appendChild(sel);
+    left.appendChild(sel);
     const jqlInput = el("textarea");
     jqlInput.className = "jql";
     jqlInput.rows = 1;
@@ -2709,13 +2821,30 @@
         }
       }
     };
-    toolbar.appendChild(jqlInput);
+    left.appendChild(jqlInput);
     setTimeout(autoGrow, 0);
     const saveFilterBtn = el("button", null, "\uD544\uD130 \uC800\uC7A5");
     saveFilterBtn.id = "save-filter-btn";
     saveFilterBtn.title = "\uD604\uC7AC JQL\uC744 Jira \uC800\uC7A5 \uD544\uD130\uB85C \uB9CC\uB4E4\uAE30";
-    toolbar.appendChild(saveFilterBtn);
-    toolbar.appendChild(renderAssigneePicker());
+    left.appendChild(saveFilterBtn);
+    left.appendChild(renderAssigneePicker());
+    left.appendChild(renderStatusPicker());
+    if (state.customJql || state.selectedFilterId || state.assigneeIds.length || state.includeUnassigned || state.statusCats.length) {
+      const resetBtn = el("button", "tb-reset", "\uD544\uD130 \uCD08\uAE30\uD654");
+      resetBtn.onclick = async () => {
+        state.customJql = "";
+        state.selectedFilterId = "";
+        state.assigneeIds = [];
+        state.includeUnassigned = false;
+        state.statusCats = [];
+        try {
+          await loadAll();
+        } catch (e) {
+          showError(e);
+        }
+      };
+      left.appendChild(resetBtn);
+    }
     const viewSel = el("select");
     viewSel.title = "\uBCF4\uAE30 \uBC29\uC2DD";
     for (const [val, label] of [["tree", "\uACC4\uCE35 \uBCF4\uAE30"], ["epic", "\uC5D0\uD53D\uBCC4 \uADF8\uB8F9"], ["flat", "\uD3C9\uBA74 \uBCF4\uAE30"]]) {
@@ -2727,26 +2856,27 @@
       state.view = viewSel.value;
       render();
     };
-    toolbar.appendChild(viewSel);
+    right.appendChild(viewSel);
     const zoomBox = el("div", "zoom");
     for (const k of ["week", "month", "quarter"]) {
       const b = el("button", "zoom-btn" + (state.zoom === k ? " active" : ""), ZOOM[k].label);
       b.onclick = () => {
         state.zoom = k;
+        state.zoomScale = 1;
         render(true);
       };
       zoomBox.appendChild(b);
     }
-    toolbar.appendChild(zoomBox);
+    right.appendChild(zoomBox);
     const todayBtn = el("button", null, "\uC624\uB298");
     todayBtn.onclick = () => scrollToToday();
-    toolbar.appendChild(todayBtn);
+    right.appendChild(todayBtn);
     const manageBtn = el("button", null, "\uD734\uC77C \uAD00\uB9AC");
     manageBtn.id = "manage-btn";
-    toolbar.appendChild(manageBtn);
+    right.appendChild(manageBtn);
     const legend = el("div", "legend");
-    legend.innerHTML = '<span><span class="swatch" style="background:var(--holiday)"></span>\uACF5\uD734\uC77C/\uD734\uC77C</span><span><span class="swatch" style="background:var(--weekend)"></span>\uC8FC\uB9D0</span><span><span class="swatch" style="background:var(--bar)"></span>\uC9C4\uD589</span><span><span class="swatch" style="background:var(--bar-done)"></span>\uC644\uB8CC</span><span><span class="swatch" style="background:var(--bar-new)"></span>\uD560 \uC77C</span><span><span class="swatch" style="background:#36b37e;width:3px"></span>\uC624\uB298</span>';
-    toolbar.appendChild(legend);
+    legend.innerHTML = '<span><span class="swatch" style="background:var(--holiday)"></span>\uACF5\uD734\uC77C/\uD734\uC77C</span><span><span class="swatch" style="background:var(--weekend)"></span>\uC8FC\uB9D0</span><span><span class="swatch" style="background:var(--bar-new)"></span>\uD560 \uC77C</span><span><span class="swatch" style="background:var(--bar)"></span>\uC9C4\uD589 \uC911</span><span><span class="swatch" style="background:var(--bar-done)"></span>\uC644\uB8CC</span><span><span class="swatch" style="background:#36b37e;width:3px"></span>\uC624\uB298</span>';
+    right.appendChild(legend);
     return toolbar;
   }
   function startEditTitle(titleEl) {
@@ -2830,13 +2960,30 @@
     }
     return "";
   }
+  var STATUS_CAT_ID = { new: 2, indeterminate: 4, done: 3 };
+  function effectiveJqlForSave() {
+    let jql = currentJql();
+    if (!jql) return "";
+    const inList = state.assigneeIds.map((a) => `"${a}"`).join(", ");
+    if (inList && state.includeUnassigned) jql += ` AND (assignee in (${inList}) OR assignee is EMPTY)`;
+    else if (inList) jql += ` AND assignee in (${inList})`;
+    else if (state.includeUnassigned) jql += " AND assignee is EMPTY";
+    if (state.statusCats.length) {
+      const ids = state.statusCats.map((k) => STATUS_CAT_ID[k]).filter(Boolean);
+      if (ids.length) jql += ` AND statusCategory in (${ids.join(", ")})`;
+    }
+    return jql;
+  }
   function renderSaveFilterPanel() {
     const panel = el("div", "manage");
     panel.appendChild(el("div", "manage-title", "\uD604\uC7AC JQL\uC744 \uD544\uD130\uB85C \uC800\uC7A5"));
-    const jql = currentJql();
+    const jql = effectiveJqlForSave();
     if (!jql) {
       panel.appendChild(el("div", "manage-empty", "\uC800\uC7A5\uD560 JQL\uC774 \uC5C6\uC2B5\uB2C8\uB2E4. JQL\uC744 \uC9C1\uC811 \uC785\uB825\uD55C \uB4A4 \uC800\uC7A5\uD558\uC138\uC694."));
       return panel;
+    }
+    if (state.assigneeIds.length || state.includeUnassigned || state.statusCats.length) {
+      panel.appendChild(el("div", "sf-note", "\u203B \uD604\uC7AC \uB2F4\uB2F9\uC790\xB7\uC0C1\uD0DC \uBC94\uC8FC \uD544\uD130\uAC00 JQL\uC5D0 \uD3EC\uD568\uB418\uC5B4 \uC800\uC7A5\uB429\uB2C8\uB2E4."));
     }
     panel.appendChild(el("div", "sf-jql", jql));
     const form = el("div", "manage-form");
@@ -2871,6 +3018,9 @@
       state.filters = [...state.filters, filter].sort((a, b) => a.name.localeCompare(b.name));
       state.selectedFilterId = String(filter.id);
       state.customJql = "";
+      state.assigneeIds = [];
+      state.includeUnassigned = false;
+      state.statusCats = [];
       msg.textContent = "\uC800\uC7A5\uB428!";
       try {
         await loadAll();
@@ -2881,6 +3031,21 @@
     form.append(nameInput, globalWrap, saveBtn, msg);
     panel.appendChild(form);
     return panel;
+  }
+  function renderZoomFloat() {
+    const box = el("div", "zoom-float");
+    const setScale = (s) => {
+      state.zoomScale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s));
+      render(true);
+    };
+    const outBtn = el("button", "zoom-btn", "\u2212");
+    outBtn.title = "\uCD95\uC18C";
+    outBtn.onclick = () => setScale(state.zoomScale / 1.25);
+    const inBtn = el("button", "zoom-btn", "+");
+    inBtn.title = "\uD655\uB300";
+    inBtn.onclick = () => setScale(state.zoomScale * 1.25);
+    box.append(outBtn, inBtn);
+    return box;
   }
   function render(restoreScroll) {
     const prevScroll = restoreScroll ? null : document.querySelector(".timeline-wrap")?.scrollLeft;
@@ -2912,7 +3077,15 @@
       root().appendChild(el("div", "empty", `${who}\uC870\uAC74\uC5D0 \uB9DE\uACE0 \uB9C8\uAC10\uC77C(duedate)\uC774 \uC124\uC815\uB41C \uC774\uC288\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. ${meta}`));
       return;
     }
-    root().appendChild(renderTimeline(d));
+    const shown = statusFiltered(d.issues);
+    if (shown.length === 0) {
+      root().appendChild(el("div", "empty", "\uC120\uD0DD\uD55C \uC0C1\uD0DC \uBC94\uC8FC\uC5D0 \uD574\uB2F9\uD558\uB294 \uC774\uC288\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4."));
+      return;
+    }
+    const area = el("div", "timeline-area");
+    area.appendChild(renderTimeline({ ...d, issues: shown }));
+    area.appendChild(renderZoomFloat());
+    root().appendChild(area);
     if (prevScroll != null) {
       const w = document.querySelector(".timeline-wrap");
       if (w) w.scrollLeft = prevScroll;
@@ -3014,7 +3187,8 @@
       if (s && e) {
         const offset = Math.max(0, dayDiff(rangeStart, s));
         const span = Math.max(1, dayDiff(s, e) + 1);
-        const bar = el("div", barClass(it) + " clickable", state.zoom === "week" ? it.summary || it.key : "");
+        const barText = state.zoom === "week" ? it.summary || it.key : state.zoom === "month" ? it.key : "";
+        const bar = el("div", barClass(it) + " clickable", barText);
         bar.style.left = `${offset * W + 1}px`;
         bar.style.width = `${span * W - 2}px`;
         bar.title = `${it.key} \xB7 ${s} ~ ${e} \xB7 ${it.status} (\uD074\uB9AD\uD558\uC5EC \uC5F4\uAE30 \xB7 \uC591\uB05D/\uAC00\uC6B4\uB370 \uB4DC\uB798\uADF8\uB85C \uAE30\uAC04 \uBCC0\uACBD)`;
