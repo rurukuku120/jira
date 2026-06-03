@@ -48,6 +48,20 @@ body {
 .tb-left { flex: 1 1 auto; }
 .tb-right { margin-left: auto; gap: 10px; }
 .tb-reset { color: var(--subtle); }
+.tb-adv.active { border-color: var(--bar); color: var(--bar); }
+.sort-dir { min-width: 30px; font-weight: 700; }
+
+/* 고급 필터 패널 */
+.adv-sec { margin-top: 10px; }
+.adv-sec-title { font-size: 12px; color: var(--subtle); margin-bottom: 5px; }
+.adv-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.adv-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 3px 10px; border: 1px solid var(--grid); border-radius: 14px; cursor: pointer; background: var(--bg); color: var(--text); user-select: none; }
+.adv-chip.on { background: var(--bar); color: #fff; border-color: var(--bar); }
+.adv-chip input { margin: 0; }
+
+/* 그룹 헤더 진행률 바 */
+.grp-prog { display: inline-block; width: 64px; height: 6px; background: var(--grid); border-radius: 3px; margin-left: 8px; overflow: hidden; vertical-align: middle; }
+.grp-prog-fill { display: block; height: 100%; background: var(--bar-done); }
 .tb-count { font-size: 12px; color: var(--subtle); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tb-warn { color: var(--holiday-line); font-weight: 700; cursor: help; }
 .toolbar .legend { display: flex; gap: 14px; color: var(--subtle); flex-wrap: wrap; }
@@ -136,6 +150,9 @@ body {
 .row:hover .row-goto { opacity: 0.75; }
 .row-goto:hover { opacity: 1 !important; }
 
+/* 담당자 아바타 */
+.row-avatar { width: 16px; height: 16px; border-radius: 50%; flex: 0 0 auto; }
+
 .row-track { position: relative; border-bottom: 1px solid var(--grid); flex: 1; }
 .bar {
   position: absolute; top: 6px; height: calc(var(--row-h) - 14px);
@@ -147,6 +164,10 @@ body {
 .bar.new { background: var(--bar-new); }
 .bar { cursor: grab; }
 .bar.dragging { cursor: grabbing; opacity: 0.85; }
+.bar.overdue { box-shadow: 0 0 0 2px #ff5630 inset; }
+/* 진척도 채우기(반투명) + 라벨 위로 */
+.bar-prog { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(255,255,255,0.30); border-radius: 4px 0 0 4px; z-index: 0; pointer-events: none; }
+.bar-label { position: relative; z-index: 1; }
 .bar-handle { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; z-index: 2; }
 .bar-handle.left { left: 0; }
 .bar-handle.right { right: 0; }

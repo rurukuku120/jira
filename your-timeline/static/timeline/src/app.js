@@ -43,10 +43,19 @@ const state = {
   customJql: '',
   zoom: 'week',
   zoomScale: 1,           // 확대/축소 배율 (+/- 버튼, 0.4~4)
-  view: 'tree',           // tree | epic | flat
+  view: 'tree',           // 그룹화: flat | assignee | epic | tree | priority | type | label | duebucket
+  sortKey: 'duedate',     // duedate | start | priority | created | key
+  sortDir: 'asc',         // asc | desc
   assigneeIds: [],        // 선택된 담당자 accountId 배열
   includeUnassigned: false, // '할당되지 않음' 포함 여부
   statusCats: [],         // 상태 범주 필터 (빈 배열=전체). 'new'|'indeterminate'|'done'
+  priorityFilter: [],     // 우선순위 이름 배열(빈=전체)
+  typeFilter: [],         // 이슈유형 이름 배열(빈=전체)
+  labelFilter: [],        // 라벨 배열(빈=전체)
+  overdueOnly: false,     // 지연(마감 지남 & 미완료)만
+  mineOnly: false,        // 내 이슈만
+  myAccountId: null,      // 현재 사용자 accountId
+  advOpen: false,         // 고급 필터 패널 열림 상태
   title: '당신의 타임라인',
   collapsed: {},      // { epicKey: true } 접힘 상태
   data: null,         // 마지막 로드 결과 { issues, startFieldId, rangeStart, totalDays }
@@ -64,6 +73,7 @@ async function main() {
     const context = await view.getContext();
     state.projectKey =
       context?.extension?.project?.key || context?.extension?.project?.id;
+    state.myAccountId = context?.accountId || null;
 
     const [{ filters }, { title }, asg, col] = await Promise.all([
       invoke('listFilters'),
@@ -279,10 +289,87 @@ const STATUS_CATS = [
   { key: 'done', label: '완료' },
 ];
 
-// 상태 범주 필터 적용
+// 클라이언트 측 전체 필터(상태/우선순위/유형/라벨/지연/내 이슈) 적용
 function statusFiltered(issues) {
-  if (!state.statusCats.length) return issues;
-  return issues.filter((it) => state.statusCats.includes(it.statusCategory));
+  const today = todayStr();
+  return issues.filter((it) => {
+    if (state.statusCats.length && !state.statusCats.includes(it.statusCategory)) return false;
+    if (state.priorityFilter.length && !state.priorityFilter.includes(it.priority)) return false;
+    if (state.typeFilter.length && !state.typeFilter.includes(it.type)) return false;
+    if (state.labelFilter.length && !(it.labels || []).some((l) => state.labelFilter.includes(l))) return false;
+    if (state.overdueOnly && !(it.due && it.due < today && it.statusCategory !== 'done')) return false;
+    if (state.mineOnly && it.assigneeId !== state.myAccountId) return false;
+    return true;
+  });
+}
+
+// 정렬: sortKey/sortDir 기준
+const PRIORITY_RANK = { Highest: 5, High: 4, Medium: 3, Low: 2, Lowest: 1 };
+function sortIssues(issues) {
+  const dir = state.sortDir === 'desc' ? -1 : 1;
+  const val = (it) => {
+    switch (state.sortKey) {
+      case 'start': return it.start || it.due || '';
+      case 'created': return it.created || '';
+      case 'key': return it.key;
+      case 'priority': return PRIORITY_RANK[it.priority] || 0;
+      case 'duedate':
+      default: return it.due || it.start || '';
+    }
+  };
+  return [...issues].sort((a, b) => {
+    const va = val(a), vb = val(b);
+    if (va < vb) return -1 * dir;
+    if (va > vb) return 1 * dir;
+    return 0;
+  });
+}
+
+// 그룹 함수들 (통일 형태 { id, name, issues })
+function groupByField(issues, keyFn, nameFn, prefix, noneLabel) {
+  const map = new Map();
+  for (const it of issues) {
+    const k = keyFn(it) || '__none__';
+    if (!map.has(k)) map.set(k, { id: `${prefix}:${k}`, name: k === '__none__' ? noneLabel : nameFn(it), issues: [] });
+    map.get(k).issues.push(it);
+  }
+  return [...map.values()];
+}
+function groupByPriority(issues) {
+  const g = groupByField(issues, (it) => it.priority, (it) => it.priority, 'pri', '우선순위 없음');
+  return g.sort((a, b) => (PRIORITY_RANK[b.name] || 0) - (PRIORITY_RANK[a.name] || 0));
+}
+function groupByType(issues) {
+  return groupByField(issues, (it) => it.type, (it) => it.type, 'type', '유형 없음')
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+function groupByLabel(issues) {
+  // 라벨은 다중 → 이슈가 여러 그룹에 들어갈 수 있음
+  const map = new Map();
+  for (const it of issues) {
+    const labels = (it.labels && it.labels.length) ? it.labels : ['__none__'];
+    for (const l of labels) {
+      if (!map.has(l)) map.set(l, { id: `lbl:${l}`, name: l === '__none__' ? '라벨 없음' : l, issues: [] });
+      map.get(l).issues.push(it);
+    }
+  }
+  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+function groupByDueBucket(issues) {
+  const today = parse(todayStr());
+  const endOfWeek = addDays(today, 7 - (today.getDay() || 7) + 1); // 이번 주 일요일 다음 월요일 직전 근사
+  const buckets = [
+    { id: 'due:overdue', name: '지연', issues: [], test: (it) => it.due && it.statusCategory !== 'done' && parse(it.due) < today },
+    { id: 'due:today', name: '오늘', issues: [], test: (it) => it.due === todayStr() },
+    { id: 'due:week', name: '이번 주', issues: [], test: (it) => it.due && parse(it.due) > today && parse(it.due) <= endOfWeek },
+    { id: 'due:later', name: '이후', issues: [], test: (it) => it.due && parse(it.due) > endOfWeek },
+    { id: 'due:none', name: '마감일 없음', issues: [], test: () => true },
+  ];
+  for (const it of issues) {
+    const b = buckets.find((x) => x.test(it));
+    (b || buckets[buckets.length - 1]).issues.push(it);
+  }
+  return buckets.filter((b) => b.issues.length).map(({ id, name, issues }) => ({ id, name, issues }));
 }
 
 // 상태 범주 피커 (체크박스 다중 선택, 클라이언트 측 필터)
@@ -421,12 +508,25 @@ function renderToolbar() {
   // 상태 범주 필터 (해야 할 일 / 진행 중 / 완료)
   left.appendChild(renderStatusPicker());
 
-  // 이슈 건수 + 한도 경고 (상태 범주 뒤)
+  // 고급 필터 토글 (우선순위/유형/라벨/지연/내 이슈)
+  const advN = state.priorityFilter.length + state.typeFilter.length + state.labelFilter.length
+    + (state.overdueOnly ? 1 : 0) + (state.mineOnly ? 1 : 0);
+  const advBtn = el('button', 'tb-adv' + (advN ? ' active' : ''), advN ? `고급 필터 (${advN})` : '고급 필터');
+  advBtn.onclick = () => { state.advOpen = !state.advOpen; render(); };
+  left.appendChild(advBtn);
+
+  // 이슈 건수 + 완료율 + 지연 + 한도 경고 (상태 범주 뒤)
   const d = state.data;
   if (d && d.issues) {
     const total = d.issues.length;
-    const shown = statusFiltered(d.issues).length;
-    const cnt = el('div', 'tb-count', shown === total ? `${total}건` : `${shown}/${total}건`);
+    const sh = statusFiltered(d.issues);
+    const doneN = sh.filter((i) => i.statusCategory === 'done').length;
+    const donePct = sh.length ? Math.round((doneN / sh.length) * 100) : 0;
+    const tdy = todayStr();
+    const overdueN = sh.filter((i) => i.due && i.due < tdy && i.statusCategory !== 'done').length;
+    const cntText = (sh.length === total ? `${total}건` : `${sh.length}/${total}건`)
+      + ` · 완료 ${donePct}%` + (overdueN ? ` · 지연 ${overdueN}` : '');
+    const cnt = el('div', 'tb-count', cntText);
     if (d.truncated) {
       const w = el('span', 'tb-warn', ' ⚠ 1000+');
       w.title = '이슈가 1000건을 초과해 일부만 표시됩니다. JQL/필터로 범위를 좁혀 주세요.';
@@ -447,16 +547,39 @@ function renderToolbar() {
   }
 
   // ----- 우측 그룹 -----
-  // 보기 방식 (계층/에픽별/평면)
+  // 그룹화 기준
   const viewSel = el('select');
-  viewSel.title = '보기 방식';
-  for (const [val, label] of [['tree', '계층 보기'], ['epic', '에픽별 그룹'], ['flat', '평면 보기']]) {
+  viewSel.title = '그룹화 기준';
+  for (const [val, label] of [
+    ['flat', '그룹: 없음'], ['assignee', '그룹: 담당자'], ['epic', '그룹: 에픽'],
+    ['tree', '그룹: 하위 작업'], ['priority', '그룹: 우선순위'], ['type', '그룹: 유형'],
+    ['label', '그룹: 라벨'], ['duebucket', '그룹: 마감 시기'],
+  ]) {
     const opt = new Option(label, val);
     if (state.view === val) opt.selected = true;
     viewSel.appendChild(opt);
   }
   viewSel.onchange = () => { state.view = viewSel.value; render(); };
   right.appendChild(viewSel);
+
+  // 정렬 기준 + 방향
+  const sortSel = el('select');
+  sortSel.title = '정렬 기준';
+  for (const [val, label] of [
+    ['duedate', '정렬: 마감일'], ['start', '정렬: 시작일'], ['priority', '정렬: 우선순위'],
+    ['created', '정렬: 생성일'], ['key', '정렬: 키'],
+  ]) {
+    const opt = new Option(label, val);
+    if (state.sortKey === val) opt.selected = true;
+    sortSel.appendChild(opt);
+  }
+  sortSel.onchange = () => { state.sortKey = sortSel.value; render(); };
+  right.appendChild(sortSel);
+
+  const dirBtn = el('button', 'sort-dir', state.sortDir === 'asc' ? '↑' : '↓');
+  dirBtn.title = state.sortDir === 'asc' ? '오름차순' : '내림차순';
+  dirBtn.onclick = () => { state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc'; render(); };
+  right.appendChild(dirBtn);
 
   // 줌 버튼 (주/개월/분기)
   const zoomBox = el('div', 'zoom');
@@ -648,6 +771,71 @@ function renderSaveFilterPanel() {
   return panel;
 }
 
+// ---------- 고급 필터 패널 ----------
+function renderAdvancedFilterPanel() {
+  const panel = el('div', 'manage');
+  panel.appendChild(el('div', 'manage-title', '고급 필터'));
+  const issues = (state.data && state.data.issues) || [];
+
+  // 다중 체크박스 그룹 헬퍼
+  const checkGroup = (title, values, selArr, onToggle) => {
+    if (!values.length) return;
+    const sec = el('div', 'adv-sec');
+    sec.appendChild(el('div', 'adv-sec-title', title));
+    const wrap = el('div', 'adv-chips');
+    for (const v of values) {
+      const lab = el('label', 'adv-chip' + (selArr.includes(v) ? ' on' : ''));
+      const cb = el('input');
+      cb.type = 'checkbox';
+      cb.checked = selArr.includes(v);
+      cb.onchange = () => onToggle(v, cb.checked);
+      lab.append(cb, document.createTextNode(' ' + v));
+      wrap.appendChild(lab);
+    }
+    sec.appendChild(wrap);
+    panel.appendChild(sec);
+  };
+
+  const uniq = (arr) => [...new Set(arr)].sort((a, b) => String(a).localeCompare(String(b)));
+  const priorities = uniq(issues.map((i) => i.priority).filter(Boolean));
+  const types = uniq(issues.map((i) => i.type).filter(Boolean));
+  const labels = uniq(issues.flatMap((i) => i.labels || []));
+
+  const toggle = (arrName) => (v, on) => {
+    const arr = state[arrName];
+    state[arrName] = on ? [...arr, v] : arr.filter((x) => x !== v);
+    render();
+  };
+  checkGroup('우선순위', priorities, state.priorityFilter, toggle('priorityFilter'));
+  checkGroup('유형', types, state.typeFilter, toggle('typeFilter'));
+  checkGroup('라벨', labels, state.labelFilter, toggle('labelFilter'));
+
+  // 토글류
+  const sec = el('div', 'adv-sec');
+  const mk = (label, key) => {
+    const lab = el('label', 'adv-chip' + (state[key] ? ' on' : ''));
+    const cb = el('input');
+    cb.type = 'checkbox';
+    cb.checked = state[key];
+    cb.onchange = () => { state[key] = cb.checked; render(); };
+    lab.append(cb, document.createTextNode(' ' + label));
+    return lab;
+  };
+  const wrap = el('div', 'adv-chips');
+  wrap.append(mk('지연만 (마감 지남·미완료)', 'overdueOnly'), mk('내 이슈만', 'mineOnly'));
+  sec.appendChild(wrap);
+  panel.appendChild(sec);
+
+  // 고급 필터 초기화
+  const resetBtn = el('button', 'tb-reset', '고급 필터 초기화');
+  resetBtn.onclick = () => {
+    state.priorityFilter = []; state.typeFilter = []; state.labelFilter = [];
+    state.overdueOnly = false; state.mineOnly = false; render();
+  };
+  panel.appendChild(resetBtn);
+  return panel;
+}
+
 // 타임라인 우하단 떠있는 확대/축소 컨트롤
 function renderZoomFloat() {
   const box = el('div', 'zoom-float');
@@ -687,6 +875,9 @@ function render(restoreScroll) {
     sfPanel.style.display = 'block';
   };
 
+  // 고급 필터 패널 (state.advOpen에 따라 표시 — 필터 변경 후에도 열린 상태 유지)
+  if (state.advOpen) root().appendChild(renderAdvancedFilterPanel());
+
   const d = state.data;
   if (!d || !d.issues || d.issues.length === 0) {
     const meta = d && d.startFieldId ? `시작일 필드: ${d.startFieldId}` : '';
@@ -695,9 +886,9 @@ function render(restoreScroll) {
     return;
   }
 
-  const shown = statusFiltered(d.issues);
+  const shown = sortIssues(statusFiltered(d.issues));
   if (shown.length === 0) {
-    root().appendChild(el('div', 'empty', '선택한 상태 범주에 해당하는 이슈가 없습니다.'));
+    root().appendChild(el('div', 'empty', '선택한 필터 조건에 해당하는 이슈가 없습니다.'));
     return;
   }
 
@@ -715,26 +906,48 @@ function render(restoreScroll) {
 }
 
 // 이슈를 에픽별로 그룹핑 → [{epicKey, epicName, issues:[]}]
+// 그룹 결과 통일 형태: { id(접힘키), name, issues }
 function groupByEpic(issues) {
   const map = new Map();
   for (const it of issues) {
     const k = it.epicKey || '__none__';
     if (!map.has(k)) {
-      map.set(k, {
-        epicKey: it.epicKey,
-        epicName: it.epicName || (it.epicKey ? it.epicKey : '에픽 없음'),
-        issues: [],
-      });
+      map.set(k, { id: `epic:${k}`, name: it.epicName || (it.epicKey ? it.epicKey : '에픽 없음'), issues: [] });
     }
     map.get(k).issues.push(it);
   }
   return [...map.values()];
 }
 
+function groupByAssignee(issues) {
+  const map = new Map();
+  for (const it of issues) {
+    const k = it.assigneeId || '__none__';
+    if (!map.has(k)) {
+      map.set(k, { id: `asg:${k}`, name: it.assigneeName || '미지정', issues: [] });
+    }
+    map.get(k).issues.push(it);
+  }
+  // 미지정은 맨 뒤로, 나머지는 이름순
+  return [...map.values()].sort((a, b) =>
+    a.name === '미지정' ? 1 : b.name === '미지정' ? -1 : a.name.localeCompare(b.name)
+  );
+}
+
 function barClass(it) {
   if (it.statusCategory === 'done') return 'bar done';
   if (it.statusCategory === 'new') return 'bar new';
   return 'bar'; // indeterminate = 진행
+}
+
+// 이슈 툴팁 기본 항목(불릿) — 간략 일감 정보. 호출부에서 클릭/드래그 안내 추가
+function issueTooltipBase(it) {
+  const tip = [`${it.key}${it.summary ? ' · ' + it.summary : ''}`];
+  if (it.type) tip.push(`• 유형: ${it.type}`);
+  tip.push(`• 상태: ${it.status || '-'}`);
+  tip.push(`• 담당자: ${it.assigneeName || '미지정'}`);
+  if (it.start || it.due) tip.push(`• 기간: ${it.start || it.due} ~ ${it.due || it.start}`);
+  return tip;
 }
 
 // 상태 범주 기본 색
@@ -848,9 +1061,16 @@ function renderTimeline({ issues, rangeStart, totalDays }) {
       label.appendChild(c);
     }
     label.appendChild(makeColorControl(it));
+    if (it.assigneeAvatar) {
+      const av = el('img', 'row-avatar');
+      av.src = it.assigneeAvatar;
+      av.alt = it.assigneeName || '';
+      av.title = it.assigneeName || '';
+      label.appendChild(av);
+    }
     label.appendChild(el('span', 'key', it.key));
     label.appendChild(el('span', 'sum link', it.summary || ''));
-    label.title = `${it.key} 열기`;
+    label.title = issueTooltipBase(it).concat('• 클릭: 이슈 열기').join('\n');
     label.onclick = () => openIssue(it.key);
 
     // 이 이슈 날짜로 타임라인 스크롤 (이슈 열기와 구분 위해 stopPropagation)
@@ -867,11 +1087,20 @@ function renderTimeline({ issues, rangeStart, totalDays }) {
     if (s && e) {
       const offset = Math.max(0, dayDiff(rangeStart, s));
       const span = Math.max(1, dayDiff(s, e) + 1);
-      // 바 라벨: 주=요약, 개월=key, 분기=없음(너무 좁음). overflow는 CSS로 클립.
-      const barText = state.zoom === 'week' ? (it.summary || it.key) : state.zoom === 'month' ? it.key : '';
-      const bar = el('div', barClass(it) + ' clickable', barText);
+      // 지연 여부(마감 지남 & 미완료)
+      const overdue = it.due && it.due < todayStr() && it.statusCategory !== 'done';
+      const bar = el('div', barClass(it) + (overdue ? ' overdue' : '') + ' clickable');
       bar.style.left = `${offset * W + 1}px`;
       bar.style.width = `${span * W - 2}px`;
+      // 진척도 채우기(반투명 흰색 오버레이)
+      if (typeof it.progress === 'number' && it.progress > 0) {
+        const pf = el('div', 'bar-prog');
+        pf.style.width = `${Math.min(100, it.progress)}%`;
+        bar.appendChild(pf);
+      }
+      // 바 라벨: 주=요약, 개월=key, 분기=없음(너무 좁음). overflow는 CSS로 클립.
+      const barText = state.zoom === 'week' ? (it.summary || it.key) : state.zoom === 'month' ? it.key : '';
+      if (barText) bar.appendChild(el('span', 'bar-label', barText));
       if (state.colors[it.key]) {
         // 사용자 지정 색. 흰색/검정만 글자색 대응(흰 배경에 흰 글씨 방지)
         const c = state.colors[it.key];
@@ -880,7 +1109,11 @@ function renderTimeline({ issues, rangeStart, totalDays }) {
         if (lc === '#ffffff' || lc === '#fff') bar.style.color = '#172b4d';
         else if (lc === '#000000' || lc === '#000') bar.style.color = '#fff';
       }
-      bar.title = `${it.key} · ${s} ~ ${e} · ${it.status} (클릭하여 열기 · 양끝/가운데 드래그로 기간 변경)`;
+      const tip = issueTooltipBase(it);
+      if (typeof it.progress === 'number') tip.push(`• 진척도: ${it.progress}%`);
+      if (overdue) tip.push('• ⚠ 지연됨');
+      tip.push('• 클릭: 이슈 열기 · 드래그: 양끝=기간, 가운데=이동');
+      bar.title = tip.join('\n');
       // 양끝 + 본체 드래그 핸들 (기간 조절 / 이동)
       const hL = el('div', 'bar-handle left');
       const hR = el('div', 'bar-handle right');
@@ -921,20 +1154,31 @@ function renderTimeline({ issues, rangeStart, totalDays }) {
     };
     roots.forEach((r) => walk(r, 0));
   } else {
-    // 에픽별 그룹 (기본 그룹 헤더 + 소속 이슈)
-    const groups = groupByEpic(issues);
+    // 그룹 보기: 담당자/에픽/우선순위/유형/라벨/마감버킷
+    const groups =
+      state.view === 'assignee' ? groupByAssignee(issues) :
+      state.view === 'priority' ? groupByPriority(issues) :
+      state.view === 'type' ? groupByType(issues) :
+      state.view === 'label' ? groupByLabel(issues) :
+      state.view === 'duebucket' ? groupByDueBucket(issues) :
+      groupByEpic(issues);
     for (const g of groups) {
-      const isCollapsed = !!state.collapsed[g.epicKey || '__none__'];
+      const isCollapsed = !!state.collapsed[g.id];
       const grow = el('div', 'row group-row');
       const glabel = el('div', 'row-label group-label');
       glabel.appendChild(el('span', 'caret', isCollapsed ? '▶' : '▼'));
-      glabel.appendChild(el('span', 'epic-name', g.epicName));
+      glabel.appendChild(el('span', 'epic-name', g.name));
       glabel.appendChild(el('span', 'epic-count', `(${g.issues.length})`));
-      glabel.onclick = () => {
-        const key = g.epicKey || '__none__';
-        state.collapsed[key] = !state.collapsed[key];
-        render();
-      };
+      // 그룹 진행률 바 (완료 비율)
+      const doneN = g.issues.filter((it) => it.statusCategory === 'done').length;
+      const pct = Math.round((doneN / g.issues.length) * 100);
+      const prog = el('span', 'grp-prog');
+      prog.title = `완료 ${doneN}/${g.issues.length} (${pct}%)`;
+      const fill = el('span', 'grp-prog-fill');
+      fill.style.width = `${pct}%`;
+      prog.appendChild(fill);
+      glabel.appendChild(prog);
+      glabel.onclick = () => { state.collapsed[g.id] = !state.collapsed[g.id]; render(); };
       grow.appendChild(glabel);
       const gtrack = el('div', 'row-track');
       gtrack.style.width = `${trackW}px`;

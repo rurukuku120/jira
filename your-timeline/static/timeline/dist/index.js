@@ -2465,13 +2465,31 @@
     zoomScale: 1,
     // 확대/축소 배율 (+/- 버튼, 0.4~4)
     view: "tree",
-    // tree | epic | flat
+    // 그룹화: flat | assignee | epic | tree | priority | type | label | duebucket
+    sortKey: "duedate",
+    // duedate | start | priority | created | key
+    sortDir: "asc",
+    // asc | desc
     assigneeIds: [],
     // 선택된 담당자 accountId 배열
     includeUnassigned: false,
     // '할당되지 않음' 포함 여부
     statusCats: [],
     // 상태 범주 필터 (빈 배열=전체). 'new'|'indeterminate'|'done'
+    priorityFilter: [],
+    // 우선순위 이름 배열(빈=전체)
+    typeFilter: [],
+    // 이슈유형 이름 배열(빈=전체)
+    labelFilter: [],
+    // 라벨 배열(빈=전체)
+    overdueOnly: false,
+    // 지연(마감 지남 & 미완료)만
+    mineOnly: false,
+    // 내 이슈만
+    myAccountId: null,
+    // 현재 사용자 accountId
+    advOpen: false,
+    // 고급 필터 패널 열림 상태
     title: "\uB2F9\uC2E0\uC758 \uD0C0\uC784\uB77C\uC778",
     collapsed: {},
     // { epicKey: true } 접힘 상태
@@ -2490,6 +2508,7 @@
     try {
       const context = await import_bridge.view.getContext();
       state.projectKey = context?.extension?.project?.key || context?.extension?.project?.id;
+      state.myAccountId = context?.accountId || null;
       const [{ filters }, { title }, asg, col] = await Promise.all([
         (0, import_bridge.invoke)("listFilters"),
         (0, import_bridge.invoke)("getTitle"),
@@ -2683,8 +2702,84 @@
     { key: "done", label: "\uC644\uB8CC" }
   ];
   function statusFiltered(issues) {
-    if (!state.statusCats.length) return issues;
-    return issues.filter((it) => state.statusCats.includes(it.statusCategory));
+    const today = todayStr();
+    return issues.filter((it) => {
+      if (state.statusCats.length && !state.statusCats.includes(it.statusCategory)) return false;
+      if (state.priorityFilter.length && !state.priorityFilter.includes(it.priority)) return false;
+      if (state.typeFilter.length && !state.typeFilter.includes(it.type)) return false;
+      if (state.labelFilter.length && !(it.labels || []).some((l) => state.labelFilter.includes(l))) return false;
+      if (state.overdueOnly && !(it.due && it.due < today && it.statusCategory !== "done")) return false;
+      if (state.mineOnly && it.assigneeId !== state.myAccountId) return false;
+      return true;
+    });
+  }
+  var PRIORITY_RANK = { Highest: 5, High: 4, Medium: 3, Low: 2, Lowest: 1 };
+  function sortIssues(issues) {
+    const dir = state.sortDir === "desc" ? -1 : 1;
+    const val = (it) => {
+      switch (state.sortKey) {
+        case "start":
+          return it.start || it.due || "";
+        case "created":
+          return it.created || "";
+        case "key":
+          return it.key;
+        case "priority":
+          return PRIORITY_RANK[it.priority] || 0;
+        case "duedate":
+        default:
+          return it.due || it.start || "";
+      }
+    };
+    return [...issues].sort((a, b) => {
+      const va = val(a), vb = val(b);
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return 0;
+    });
+  }
+  function groupByField(issues, keyFn, nameFn, prefix, noneLabel) {
+    const map = /* @__PURE__ */ new Map();
+    for (const it of issues) {
+      const k = keyFn(it) || "__none__";
+      if (!map.has(k)) map.set(k, { id: `${prefix}:${k}`, name: k === "__none__" ? noneLabel : nameFn(it), issues: [] });
+      map.get(k).issues.push(it);
+    }
+    return [...map.values()];
+  }
+  function groupByPriority(issues) {
+    const g = groupByField(issues, (it) => it.priority, (it) => it.priority, "pri", "\uC6B0\uC120\uC21C\uC704 \uC5C6\uC74C");
+    return g.sort((a, b) => (PRIORITY_RANK[b.name] || 0) - (PRIORITY_RANK[a.name] || 0));
+  }
+  function groupByType(issues) {
+    return groupByField(issues, (it) => it.type, (it) => it.type, "type", "\uC720\uD615 \uC5C6\uC74C").sort((a, b) => a.name.localeCompare(b.name));
+  }
+  function groupByLabel(issues) {
+    const map = /* @__PURE__ */ new Map();
+    for (const it of issues) {
+      const labels = it.labels && it.labels.length ? it.labels : ["__none__"];
+      for (const l of labels) {
+        if (!map.has(l)) map.set(l, { id: `lbl:${l}`, name: l === "__none__" ? "\uB77C\uBCA8 \uC5C6\uC74C" : l, issues: [] });
+        map.get(l).issues.push(it);
+      }
+    }
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }
+  function groupByDueBucket(issues) {
+    const today = parse(todayStr());
+    const endOfWeek = addDays(today, 7 - (today.getDay() || 7) + 1);
+    const buckets = [
+      { id: "due:overdue", name: "\uC9C0\uC5F0", issues: [], test: (it) => it.due && it.statusCategory !== "done" && parse(it.due) < today },
+      { id: "due:today", name: "\uC624\uB298", issues: [], test: (it) => it.due === todayStr() },
+      { id: "due:week", name: "\uC774\uBC88 \uC8FC", issues: [], test: (it) => it.due && parse(it.due) > today && parse(it.due) <= endOfWeek },
+      { id: "due:later", name: "\uC774\uD6C4", issues: [], test: (it) => it.due && parse(it.due) > endOfWeek },
+      { id: "due:none", name: "\uB9C8\uAC10\uC77C \uC5C6\uC74C", issues: [], test: () => true }
+    ];
+    for (const it of issues) {
+      const b = buckets.find((x) => x.test(it));
+      (b || buckets[buckets.length - 1]).issues.push(it);
+    }
+    return buckets.filter((b) => b.issues.length).map(({ id, name, issues: issues2 }) => ({ id, name, issues: issues2 }));
   }
   function renderStatusPicker() {
     const wrap = el("div", "asg-wrap");
@@ -2821,11 +2916,23 @@
     left.appendChild(saveFilterBtn);
     left.appendChild(renderAssigneePicker());
     left.appendChild(renderStatusPicker());
+    const advN = state.priorityFilter.length + state.typeFilter.length + state.labelFilter.length + (state.overdueOnly ? 1 : 0) + (state.mineOnly ? 1 : 0);
+    const advBtn = el("button", "tb-adv" + (advN ? " active" : ""), advN ? `\uACE0\uAE09 \uD544\uD130 (${advN})` : "\uACE0\uAE09 \uD544\uD130");
+    advBtn.onclick = () => {
+      state.advOpen = !state.advOpen;
+      render();
+    };
+    left.appendChild(advBtn);
     const d = state.data;
     if (d && d.issues) {
       const total = d.issues.length;
-      const shown = statusFiltered(d.issues).length;
-      const cnt = el("div", "tb-count", shown === total ? `${total}\uAC74` : `${shown}/${total}\uAC74`);
+      const sh = statusFiltered(d.issues);
+      const doneN = sh.filter((i) => i.statusCategory === "done").length;
+      const donePct = sh.length ? Math.round(doneN / sh.length * 100) : 0;
+      const tdy = todayStr();
+      const overdueN = sh.filter((i) => i.due && i.due < tdy && i.statusCategory !== "done").length;
+      const cntText = (sh.length === total ? `${total}\uAC74` : `${sh.length}/${total}\uAC74`) + ` \xB7 \uC644\uB8CC ${donePct}%` + (overdueN ? ` \xB7 \uC9C0\uC5F0 ${overdueN}` : "");
+      const cnt = el("div", "tb-count", cntText);
       if (d.truncated) {
         const w = el("span", "tb-warn", " \u26A0 1000+");
         w.title = "\uC774\uC288\uAC00 1000\uAC74\uC744 \uCD08\uACFC\uD574 \uC77C\uBD80\uB9CC \uD45C\uC2DC\uB429\uB2C8\uB2E4. JQL/\uD544\uD130\uB85C \uBC94\uC704\uB97C \uC881\uD600 \uC8FC\uC138\uC694.";
@@ -2850,8 +2957,17 @@
       left.appendChild(resetBtn);
     }
     const viewSel = el("select");
-    viewSel.title = "\uBCF4\uAE30 \uBC29\uC2DD";
-    for (const [val, label] of [["tree", "\uACC4\uCE35 \uBCF4\uAE30"], ["epic", "\uC5D0\uD53D\uBCC4 \uADF8\uB8F9"], ["flat", "\uD3C9\uBA74 \uBCF4\uAE30"]]) {
+    viewSel.title = "\uADF8\uB8F9\uD654 \uAE30\uC900";
+    for (const [val, label] of [
+      ["flat", "\uADF8\uB8F9: \uC5C6\uC74C"],
+      ["assignee", "\uADF8\uB8F9: \uB2F4\uB2F9\uC790"],
+      ["epic", "\uADF8\uB8F9: \uC5D0\uD53D"],
+      ["tree", "\uADF8\uB8F9: \uD558\uC704 \uC791\uC5C5"],
+      ["priority", "\uADF8\uB8F9: \uC6B0\uC120\uC21C\uC704"],
+      ["type", "\uADF8\uB8F9: \uC720\uD615"],
+      ["label", "\uADF8\uB8F9: \uB77C\uBCA8"],
+      ["duebucket", "\uADF8\uB8F9: \uB9C8\uAC10 \uC2DC\uAE30"]
+    ]) {
       const opt = new Option(label, val);
       if (state.view === val) opt.selected = true;
       viewSel.appendChild(opt);
@@ -2861,6 +2977,31 @@
       render();
     };
     right.appendChild(viewSel);
+    const sortSel = el("select");
+    sortSel.title = "\uC815\uB82C \uAE30\uC900";
+    for (const [val, label] of [
+      ["duedate", "\uC815\uB82C: \uB9C8\uAC10\uC77C"],
+      ["start", "\uC815\uB82C: \uC2DC\uC791\uC77C"],
+      ["priority", "\uC815\uB82C: \uC6B0\uC120\uC21C\uC704"],
+      ["created", "\uC815\uB82C: \uC0DD\uC131\uC77C"],
+      ["key", "\uC815\uB82C: \uD0A4"]
+    ]) {
+      const opt = new Option(label, val);
+      if (state.sortKey === val) opt.selected = true;
+      sortSel.appendChild(opt);
+    }
+    sortSel.onchange = () => {
+      state.sortKey = sortSel.value;
+      render();
+    };
+    right.appendChild(sortSel);
+    const dirBtn = el("button", "sort-dir", state.sortDir === "asc" ? "\u2191" : "\u2193");
+    dirBtn.title = state.sortDir === "asc" ? "\uC624\uB984\uCC28\uC21C" : "\uB0B4\uB9BC\uCC28\uC21C";
+    dirBtn.onclick = () => {
+      state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+      render();
+    };
+    right.appendChild(dirBtn);
     const zoomBox = el("div", "zoom");
     for (const k of ["week", "month", "quarter"]) {
       const b = el("button", "zoom-btn" + (state.zoom === k ? " active" : ""), ZOOM[k].label);
@@ -3036,6 +3177,68 @@
     panel.appendChild(form);
     return panel;
   }
+  function renderAdvancedFilterPanel() {
+    const panel = el("div", "manage");
+    panel.appendChild(el("div", "manage-title", "\uACE0\uAE09 \uD544\uD130"));
+    const issues = state.data && state.data.issues || [];
+    const checkGroup = (title, values, selArr, onToggle) => {
+      if (!values.length) return;
+      const sec2 = el("div", "adv-sec");
+      sec2.appendChild(el("div", "adv-sec-title", title));
+      const wrap2 = el("div", "adv-chips");
+      for (const v of values) {
+        const lab = el("label", "adv-chip" + (selArr.includes(v) ? " on" : ""));
+        const cb = el("input");
+        cb.type = "checkbox";
+        cb.checked = selArr.includes(v);
+        cb.onchange = () => onToggle(v, cb.checked);
+        lab.append(cb, document.createTextNode(" " + v));
+        wrap2.appendChild(lab);
+      }
+      sec2.appendChild(wrap2);
+      panel.appendChild(sec2);
+    };
+    const uniq = (arr) => [...new Set(arr)].sort((a, b) => String(a).localeCompare(String(b)));
+    const priorities = uniq(issues.map((i) => i.priority).filter(Boolean));
+    const types = uniq(issues.map((i) => i.type).filter(Boolean));
+    const labels = uniq(issues.flatMap((i) => i.labels || []));
+    const toggle = (arrName) => (v, on) => {
+      const arr = state[arrName];
+      state[arrName] = on ? [...arr, v] : arr.filter((x) => x !== v);
+      render();
+    };
+    checkGroup("\uC6B0\uC120\uC21C\uC704", priorities, state.priorityFilter, toggle("priorityFilter"));
+    checkGroup("\uC720\uD615", types, state.typeFilter, toggle("typeFilter"));
+    checkGroup("\uB77C\uBCA8", labels, state.labelFilter, toggle("labelFilter"));
+    const sec = el("div", "adv-sec");
+    const mk = (label, key) => {
+      const lab = el("label", "adv-chip" + (state[key] ? " on" : ""));
+      const cb = el("input");
+      cb.type = "checkbox";
+      cb.checked = state[key];
+      cb.onchange = () => {
+        state[key] = cb.checked;
+        render();
+      };
+      lab.append(cb, document.createTextNode(" " + label));
+      return lab;
+    };
+    const wrap = el("div", "adv-chips");
+    wrap.append(mk("\uC9C0\uC5F0\uB9CC (\uB9C8\uAC10 \uC9C0\uB0A8\xB7\uBBF8\uC644\uB8CC)", "overdueOnly"), mk("\uB0B4 \uC774\uC288\uB9CC", "mineOnly"));
+    sec.appendChild(wrap);
+    panel.appendChild(sec);
+    const resetBtn = el("button", "tb-reset", "\uACE0\uAE09 \uD544\uD130 \uCD08\uAE30\uD654");
+    resetBtn.onclick = () => {
+      state.priorityFilter = [];
+      state.typeFilter = [];
+      state.labelFilter = [];
+      state.overdueOnly = false;
+      state.mineOnly = false;
+      render();
+    };
+    panel.appendChild(resetBtn);
+    return panel;
+  }
   function renderZoomFloat() {
     const box = el("div", "zoom-float");
     const setScale = (s) => {
@@ -3074,6 +3277,7 @@
       sfPanel = fresh;
       sfPanel.style.display = "block";
     };
+    if (state.advOpen) root().appendChild(renderAdvancedFilterPanel());
     const d = state.data;
     if (!d || !d.issues || d.issues.length === 0) {
       const meta = d && d.startFieldId ? `\uC2DC\uC791\uC77C \uD544\uB4DC: ${d.startFieldId}` : "";
@@ -3081,9 +3285,9 @@
       root().appendChild(el("div", "empty", `${who}\uC870\uAC74\uC5D0 \uB9DE\uACE0 \uB9C8\uAC10\uC77C(duedate)\uC774 \uC124\uC815\uB41C \uC774\uC288\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. ${meta}`));
       return;
     }
-    const shown = statusFiltered(d.issues);
+    const shown = sortIssues(statusFiltered(d.issues));
     if (shown.length === 0) {
-      root().appendChild(el("div", "empty", "\uC120\uD0DD\uD55C \uC0C1\uD0DC \uBC94\uC8FC\uC5D0 \uD574\uB2F9\uD558\uB294 \uC774\uC288\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4."));
+      root().appendChild(el("div", "empty", "\uC120\uD0DD\uD55C \uD544\uD130 \uC870\uAC74\uC5D0 \uD574\uB2F9\uD558\uB294 \uC774\uC288\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4."));
       return;
     }
     const area = el("div", "timeline-area");
@@ -3102,20 +3306,37 @@
     for (const it of issues) {
       const k = it.epicKey || "__none__";
       if (!map.has(k)) {
-        map.set(k, {
-          epicKey: it.epicKey,
-          epicName: it.epicName || (it.epicKey ? it.epicKey : "\uC5D0\uD53D \uC5C6\uC74C"),
-          issues: []
-        });
+        map.set(k, { id: `epic:${k}`, name: it.epicName || (it.epicKey ? it.epicKey : "\uC5D0\uD53D \uC5C6\uC74C"), issues: [] });
       }
       map.get(k).issues.push(it);
     }
     return [...map.values()];
   }
+  function groupByAssignee(issues) {
+    const map = /* @__PURE__ */ new Map();
+    for (const it of issues) {
+      const k = it.assigneeId || "__none__";
+      if (!map.has(k)) {
+        map.set(k, { id: `asg:${k}`, name: it.assigneeName || "\uBBF8\uC9C0\uC815", issues: [] });
+      }
+      map.get(k).issues.push(it);
+    }
+    return [...map.values()].sort(
+      (a, b) => a.name === "\uBBF8\uC9C0\uC815" ? 1 : b.name === "\uBBF8\uC9C0\uC815" ? -1 : a.name.localeCompare(b.name)
+    );
+  }
   function barClass(it) {
     if (it.statusCategory === "done") return "bar done";
     if (it.statusCategory === "new") return "bar new";
     return "bar";
+  }
+  function issueTooltipBase(it) {
+    const tip = [`${it.key}${it.summary ? " \xB7 " + it.summary : ""}`];
+    if (it.type) tip.push(`\u2022 \uC720\uD615: ${it.type}`);
+    tip.push(`\u2022 \uC0C1\uD0DC: ${it.status || "-"}`);
+    tip.push(`\u2022 \uB2F4\uB2F9\uC790: ${it.assigneeName || "\uBBF8\uC9C0\uC815"}`);
+    if (it.start || it.due) tip.push(`\u2022 \uAE30\uAC04: ${it.start || it.due} ~ ${it.due || it.start}`);
+    return tip;
   }
   function statusColor(it) {
     return it.statusCategory === "done" ? "#36b37e" : it.statusCategory === "new" ? "#8993a4" : "#4c9aff";
@@ -3217,9 +3438,16 @@
         label.appendChild(c);
       }
       label.appendChild(makeColorControl(it));
+      if (it.assigneeAvatar) {
+        const av = el("img", "row-avatar");
+        av.src = it.assigneeAvatar;
+        av.alt = it.assigneeName || "";
+        av.title = it.assigneeName || "";
+        label.appendChild(av);
+      }
       label.appendChild(el("span", "key", it.key));
       label.appendChild(el("span", "sum link", it.summary || ""));
-      label.title = `${it.key} \uC5F4\uAE30`;
+      label.title = issueTooltipBase(it).concat("\u2022 \uD074\uB9AD: \uC774\uC288 \uC5F4\uAE30").join("\n");
       label.onclick = () => openIssue(it.key);
       const goBtn = el("button", "row-goto", "\u{1F4C5}");
       goBtn.title = "\uC774 \uC774\uC288 \uB0A0\uC9DC\uB85C \uC774\uB3D9";
@@ -3236,10 +3464,17 @@
       if (s && e) {
         const offset = Math.max(0, dayDiff(rangeStart, s));
         const span = Math.max(1, dayDiff(s, e) + 1);
-        const barText = state.zoom === "week" ? it.summary || it.key : state.zoom === "month" ? it.key : "";
-        const bar = el("div", barClass(it) + " clickable", barText);
+        const overdue = it.due && it.due < todayStr() && it.statusCategory !== "done";
+        const bar = el("div", barClass(it) + (overdue ? " overdue" : "") + " clickable");
         bar.style.left = `${offset * W + 1}px`;
         bar.style.width = `${span * W - 2}px`;
+        if (typeof it.progress === "number" && it.progress > 0) {
+          const pf = el("div", "bar-prog");
+          pf.style.width = `${Math.min(100, it.progress)}%`;
+          bar.appendChild(pf);
+        }
+        const barText = state.zoom === "week" ? it.summary || it.key : state.zoom === "month" ? it.key : "";
+        if (barText) bar.appendChild(el("span", "bar-label", barText));
         if (state.colors[it.key]) {
           const c = state.colors[it.key];
           bar.style.background = c;
@@ -3247,7 +3482,11 @@
           if (lc === "#ffffff" || lc === "#fff") bar.style.color = "#172b4d";
           else if (lc === "#000000" || lc === "#000") bar.style.color = "#fff";
         }
-        bar.title = `${it.key} \xB7 ${s} ~ ${e} \xB7 ${it.status} (\uD074\uB9AD\uD558\uC5EC \uC5F4\uAE30 \xB7 \uC591\uB05D/\uAC00\uC6B4\uB370 \uB4DC\uB798\uADF8\uB85C \uAE30\uAC04 \uBCC0\uACBD)`;
+        const tip = issueTooltipBase(it);
+        if (typeof it.progress === "number") tip.push(`\u2022 \uC9C4\uCC99\uB3C4: ${it.progress}%`);
+        if (overdue) tip.push("\u2022 \u26A0 \uC9C0\uC5F0\uB428");
+        tip.push("\u2022 \uD074\uB9AD: \uC774\uC288 \uC5F4\uAE30 \xB7 \uB4DC\uB798\uADF8: \uC591\uB05D=\uAE30\uAC04, \uAC00\uC6B4\uB370=\uC774\uB3D9");
+        bar.title = tip.join("\n");
         const hL = el("div", "bar-handle left");
         const hR = el("div", "bar-handle right");
         bar.appendChild(hL);
@@ -3288,17 +3527,24 @@
       };
       roots.forEach((r) => walk(r, 0));
     } else {
-      const groups = groupByEpic(issues);
+      const groups = state.view === "assignee" ? groupByAssignee(issues) : state.view === "priority" ? groupByPriority(issues) : state.view === "type" ? groupByType(issues) : state.view === "label" ? groupByLabel(issues) : state.view === "duebucket" ? groupByDueBucket(issues) : groupByEpic(issues);
       for (const g of groups) {
-        const isCollapsed = !!state.collapsed[g.epicKey || "__none__"];
+        const isCollapsed = !!state.collapsed[g.id];
         const grow = el("div", "row group-row");
         const glabel = el("div", "row-label group-label");
         glabel.appendChild(el("span", "caret", isCollapsed ? "\u25B6" : "\u25BC"));
-        glabel.appendChild(el("span", "epic-name", g.epicName));
+        glabel.appendChild(el("span", "epic-name", g.name));
         glabel.appendChild(el("span", "epic-count", `(${g.issues.length})`));
+        const doneN = g.issues.filter((it) => it.statusCategory === "done").length;
+        const pct = Math.round(doneN / g.issues.length * 100);
+        const prog = el("span", "grp-prog");
+        prog.title = `\uC644\uB8CC ${doneN}/${g.issues.length} (${pct}%)`;
+        const fill = el("span", "grp-prog-fill");
+        fill.style.width = `${pct}%`;
+        prog.appendChild(fill);
+        glabel.appendChild(prog);
         glabel.onclick = () => {
-          const key = g.epicKey || "__none__";
-          state.collapsed[key] = !state.collapsed[key];
+          state.collapsed[g.id] = !state.collapsed[g.id];
           render();
         };
         grow.appendChild(glabel);

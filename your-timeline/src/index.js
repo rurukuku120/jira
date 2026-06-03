@@ -185,7 +185,10 @@ resolver.define('getIssues', async (req) => {
 
   const jql = `(${where}) AND duedate IS NOT EMPTY${assigneeClause}${order}`;
 
-  const fields = ['summary', 'duedate', 'status', 'issuetype', 'parent', 'assignee'];
+  const fields = [
+    'summary', 'duedate', 'status', 'issuetype', 'parent', 'assignee',
+    'priority', 'labels', 'components', 'created', 'aggregateprogress', 'progress',
+  ];
   if (startFieldId) fields.push(startFieldId);
 
   const MAX_ISSUES = 1000; // 페이지네이션 상한(이 이상은 truncated 처리)
@@ -217,18 +220,28 @@ resolver.define('getIssues', async (req) => {
       const startVal = startFieldId ? f[startFieldId] : null;
       const parent = f.parent;
       const a = f.assignee;
+      const prog = f.aggregateprogress || f.progress || {};
+      const percent = prog.total > 0 ? Math.round((prog.progress / prog.total) * 100)
+        : (typeof prog.percent === 'number' ? Math.round(prog.percent) : null);
       return {
         key: it.key,
         summary: f.summary,
         start: startVal ? String(startVal).slice(0, 10) : null,
         due: f.duedate ? String(f.duedate).slice(0, 10) : null,
+        created: f.created ? String(f.created).slice(0, 10) : null,
         status: f.status?.name || '',
         statusCategory: f.status?.statusCategory?.key || 'new', // new | indeterminate | done
         type: f.issuetype?.name || '',
+        isSubtask: !!f.issuetype?.subtask,
+        priority: f.priority?.name || null,
+        labels: Array.isArray(f.labels) ? f.labels : [],
+        components: Array.isArray(f.components) ? f.components.map((c) => c.name) : [],
+        progress: percent, // 0~100 또는 null
         epicKey: parent?.key || null,
         epicName: parent?.fields?.summary || null,
         assigneeId: a?.accountId || null,
         assigneeName: a?.displayName || null,
+        assigneeAvatar: a?.avatarUrls?.['24x24'] || a?.avatarUrls?.['48x48'] || null,
       };
     });
     return { issues, startFieldId, jql, truncated };
