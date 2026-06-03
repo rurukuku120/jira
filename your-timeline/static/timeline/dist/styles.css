@@ -135,8 +135,12 @@ body {
 .table-wrap { overflow: auto; max-height: 80vh; border-top: 1px solid var(--grid); }
 .issue-table { border-collapse: collapse; width: 100%; font-size: 13px; }
 .issue-table th, .issue-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+.issue-table { table-layout: fixed; }
 .issue-table th { position: sticky; top: 0; background: var(--bg); z-index: 1; color: var(--subtle); font-weight: 600; }
-.issue-table td:nth-child(3) { white-space: normal; min-width: 200px; }
+.issue-table td { overflow: hidden; text-overflow: ellipsis; }
+/* 컬럼 리사이즈 핸들 */
+.col-resize { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; user-select: none; }
+.col-resize:hover { background: var(--bar); opacity: 0.5; }
 .issue-table tbody tr:hover { background: var(--bg-soft); }
 .tbl-dot { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
 .tbl-overdue { color: var(--holiday-line); font-weight: 700; }
@@ -185,6 +189,14 @@ body {
 /* 진척도 채우기(반투명) + 라벨 위로 */
 .bar-prog { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(255,255,255,0.30); border-radius: 4px 0 0 4px; z-index: 0; pointer-events: none; }
 .bar-label { position: relative; z-index: 1; }
+.bar-asg { opacity: 0.85; font-weight: 400; }
+
+/* 다단계 정렬 패널 */
+.sort-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.sort-idx { color: var(--subtle); width: 18px; }
+.sort-row select { font-size: 13px; padding: 3px 6px; border: 1px solid var(--grid); border-radius: 4px; background: var(--bg); color: var(--text); }
+.sort-row .sort-dir { min-width: 64px; }
+.sort-row .mi-del:disabled { opacity: 0.4; }
 .bar-handle { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; z-index: 2; }
 .bar-handle.left { left: 0; }
 .bar-handle.right { right: 0; }

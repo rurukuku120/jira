@@ -39,14 +39,13 @@ const state = {
   projectKey: null,
   filters: [],
   assignees: [],          // 프로젝트 배정 가능 사용자 [{id, name}]
-  allLabels: [],          // 사이트 전역 라벨 목록
   selectedFilterId: '',
   customJql: '',
   zoom: 'week',
   zoomScale: 1,           // 확대/축소 배율 (+/- 버튼, 0.4~4)
   view: 'tree',           // 그룹화: flat | assignee | epic | tree | priority | type | label | duebucket
-  sortKey: 'duedate',     // duedate | start | priority | created | key
-  sortDir: 'asc',         // asc | desc
+  sorts: [{ key: 'duedate', dir: 'asc' }], // 다단계 정렬(위에서부터 우선)
+  sortOpen: false,        // 정렬 패널 열림
   assigneeIds: [],        // 선택된 담당자 accountId 배열
   includeUnassigned: false, // '할당되지 않음' 포함 여부
   statusCats: [],         // 상태 범주 필터 (빈 배열=전체). 'new'|'indeterminate'|'done'
@@ -61,6 +60,7 @@ const state = {
   showVersions: true,     // 버전(마일스톤) 수직선 표시
   versions: [],           // 프로젝트 버전 [{name, releaseDate, released}]
   presets: {},            // 보기 프리셋 { name: config }
+  tableColW: {},          // 표 뷰 컬럼 너비 오버라이드 { colKey: px }
   title: '당신의 타임라인',
   collapsed: {},      // { epicKey: true } 접힘 상태
   data: null,         // 마지막 로드 결과 { issues, startFieldId, rangeStart, totalDays }
@@ -80,12 +80,11 @@ async function main() {
       context?.extension?.project?.key || context?.extension?.project?.id;
     state.myAccountId = context?.accountId || null;
 
-    const [{ filters }, { title }, asg, col, lbl, ver, pre] = await Promise.all([
+    const [{ filters }, { title }, asg, col, ver, pre] = await Promise.all([
       invoke('listFilters'),
       invoke('getTitle'),
       invoke('listAssignees', { projectKey: state.projectKey }),
       invoke('getIssueColors'),
-      invoke('listLabels'),
       invoke('listVersions', { projectKey: state.projectKey }),
       invoke('getPresets'),
     ]);
@@ -93,7 +92,6 @@ async function main() {
     state.title = title || '당신의 타임라인';
     state.assignees = (asg && asg.assignees) || [];
     state.colors = (col && col.colors) || {};
-    state.allLabels = (lbl && lbl.labels) || [];
     state.versions = (ver && ver.versions) || [];
     state.presets = (pre && pre.presets) || {};
 
@@ -314,24 +312,30 @@ function statusFiltered(issues) {
   });
 }
 
-// 정렬: sortKey/sortDir 기준
+// 정렬: 다단계(state.sorts, 위에서부터 우선)
 const PRIORITY_RANK = { Highest: 5, High: 4, Medium: 3, Low: 2, Lowest: 1 };
+const SORT_FIELDS = [
+  ['duedate', '마감일'], ['start', '시작일'], ['priority', '우선순위'], ['created', '생성일'], ['key', '키'],
+];
+function sortVal(it, key) {
+  switch (key) {
+    case 'start': return it.start || it.due || '';
+    case 'created': return it.created || '';
+    case 'key': return it.key;
+    case 'priority': return PRIORITY_RANK[it.priority] || 0;
+    case 'duedate':
+    default: return it.due || it.start || '';
+  }
+}
 function sortIssues(issues) {
-  const dir = state.sortDir === 'desc' ? -1 : 1;
-  const val = (it) => {
-    switch (state.sortKey) {
-      case 'start': return it.start || it.due || '';
-      case 'created': return it.created || '';
-      case 'key': return it.key;
-      case 'priority': return PRIORITY_RANK[it.priority] || 0;
-      case 'duedate':
-      default: return it.due || it.start || '';
-    }
-  };
+  const sorts = state.sorts.length ? state.sorts : [{ key: 'duedate', dir: 'asc' }];
   return [...issues].sort((a, b) => {
-    const va = val(a), vb = val(b);
-    if (va < vb) return -1 * dir;
-    if (va > vb) return 1 * dir;
+    for (const s of sorts) {
+      const dir = s.dir === 'desc' ? -1 : 1;
+      const va = sortVal(a, s.key), vb = sortVal(b, s.key);
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+    }
     return 0;
   });
 }
@@ -583,24 +587,12 @@ function renderToolbar() {
     right.appendChild(viewSel);
   }
 
-  // 정렬 기준 + 방향
-  const sortSel = el('select');
-  sortSel.title = '정렬 기준';
-  for (const [val, label] of [
-    ['duedate', '정렬: 마감일'], ['start', '정렬: 시작일'], ['priority', '정렬: 우선순위'],
-    ['created', '정렬: 생성일'], ['key', '정렬: 키'],
-  ]) {
-    const opt = new Option(label, val);
-    if (state.sortKey === val) opt.selected = true;
-    sortSel.appendChild(opt);
-  }
-  sortSel.onchange = () => { state.sortKey = sortSel.value; render(); };
-  right.appendChild(sortSel);
-
-  const dirBtn = el('button', 'sort-dir', state.sortDir === 'asc' ? '↑' : '↓');
-  dirBtn.title = state.sortDir === 'asc' ? '오름차순' : '내림차순';
-  dirBtn.onclick = () => { state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc'; render(); };
-  right.appendChild(dirBtn);
+  // 정렬 (다단계) — 패널 토글
+  const sortBtn = el('button', state.sortOpen ? 'active' : null,
+    `정렬 (${state.sorts.length})`);
+  sortBtn.title = '다단계 정렬 (위에서부터 우선 적용)';
+  sortBtn.onclick = () => { state.sortOpen = !state.sortOpen; render(); };
+  right.appendChild(sortBtn);
 
   // 줌 버튼 + 오늘 + 버전 토글 (간트 전용)
   if (gantt) {
@@ -809,7 +801,7 @@ function renderSaveFilterPanel() {
 
 // ---------- 보기 프리셋 ----------
 const PRESET_KEYS = [
-  'view', 'sortKey', 'sortDir', 'zoom', 'zoomScale', 'layout', 'showVersions',
+  'view', 'sorts', 'zoom', 'zoomScale', 'layout', 'showVersions',
   'statusCats', 'priorityFilter', 'typeFilter', 'labelFilter', 'overdueOnly', 'mineOnly',
   'assigneeIds', 'includeUnassigned', 'selectedFilterId', 'customJql',
 ];
@@ -874,6 +866,55 @@ function renderPresetPanel() {
   return panel;
 }
 
+// ---------- 다단계 정렬 패널 ----------
+function renderSortPanel() {
+  const panel = el('div', 'manage');
+  panel.appendChild(el('div', 'manage-title', '정렬 (위에서부터 우선 적용)'));
+
+  state.sorts.forEach((s, idx) => {
+    const row = el('div', 'sort-row');
+    row.appendChild(el('span', 'sort-idx', `${idx + 1}.`));
+    const sel = el('select');
+    for (const [val, label] of SORT_FIELDS) {
+      const opt = new Option(label, val);
+      if (s.key === val) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.onchange = () => { state.sorts[idx].key = sel.value; render(); };
+    row.appendChild(sel);
+
+    const dir = el('button', 'sort-dir', s.dir === 'asc' ? '↑ 오름' : '↓ 내림');
+    dir.onclick = () => { state.sorts[idx].dir = s.dir === 'asc' ? 'desc' : 'asc'; render(); };
+    row.appendChild(dir);
+
+    // 순서 이동
+    const up = el('button', 'mi-del', '▲');
+    up.disabled = idx === 0;
+    up.onclick = () => { const a = state.sorts; [a[idx - 1], a[idx]] = [a[idx], a[idx - 1]]; render(); };
+    const down = el('button', 'mi-del', '▼');
+    down.disabled = idx === state.sorts.length - 1;
+    down.onclick = () => { const a = state.sorts; [a[idx + 1], a[idx]] = [a[idx], a[idx + 1]]; render(); };
+    row.append(up, down);
+
+    if (state.sorts.length > 1) {
+      const rm = el('button', 'mi-del', '×');
+      rm.onclick = () => { state.sorts.splice(idx, 1); render(); };
+      row.appendChild(rm);
+    }
+    panel.appendChild(row);
+  });
+
+  const addBtn = el('button', 'primary', '+ 정렬 기준 추가');
+  addBtn.onclick = () => {
+    const used = new Set(state.sorts.map((s) => s.key));
+    const next = (SORT_FIELDS.find(([v]) => !used.has(v)) || SORT_FIELDS[0])[0];
+    state.sorts.push({ key: next, dir: 'asc' });
+    render();
+  };
+  panel.appendChild(addBtn);
+  return panel;
+}
+
 // ---------- 고급 필터 패널 ----------
 function renderAdvancedFilterPanel() {
   const panel = el('div', 'manage');
@@ -902,8 +943,8 @@ function renderAdvancedFilterPanel() {
   const uniq = (arr) => [...new Set(arr)].sort((a, b) => String(a).localeCompare(String(b)));
   const priorities = uniq(issues.map((i) => i.priority).filter(Boolean));
   const types = uniq(issues.map((i) => i.type).filter(Boolean));
-  // 라벨: 사이트 전역 목록 우선, 없으면 로드된 이슈 기준
-  const labels = state.allLabels.length ? uniq(state.allLabels) : uniq(issues.flatMap((i) => i.labels || []));
+  // 라벨: 현재 로드된 이슈에 실제로 달린 라벨만 후보로
+  const labels = uniq(issues.flatMap((i) => i.labels || []));
 
   const toggle = (arrName) => (v, on) => {
     const arr = state[arrName];
@@ -941,13 +982,60 @@ function renderAdvancedFilterPanel() {
 }
 
 // ---------- 테이블(리스트) 뷰 ----------
+const TABLE_COLS = [
+  { key: 'color', label: '', w: 28, fixed: true, cell: (it) => { const d = el('span', 'tbl-dot'); d.style.background = state.colors[it.key] || statusColor(it); return d; } },
+  { key: 'key', label: '키', w: 90, cell: (it) => { const e = el('span', 'link', it.key); e.style.cursor = 'pointer'; e.onclick = () => openIssue(it.key); return e; } },
+  { key: 'summary', label: '요약', w: 300, text: (it) => it.summary || '' },
+  { key: 'type', label: '유형', w: 90, text: (it) => it.type || '' },
+  { key: 'status', label: '상태', w: 100, text: (it) => it.status || '' },
+  { key: 'assignee', label: '담당자', w: 120, text: (it) => it.assigneeName || '미지정' },
+  { key: 'priority', label: '우선순위', w: 90, text: (it) => it.priority || '' },
+  { key: 'start', label: '시작', w: 110, text: (it) => it.start || '' },
+  { key: 'due', label: '마감', w: 110, text: (it) => it.due || '', overdue: true },
+  { key: 'progress', label: '진척도', w: 80, text: (it) => (it.progress != null ? `${it.progress}%` : '') },
+];
+
 function renderTable(issues) {
   const wrap = el('div', 'table-wrap');
   const tbl = el('table', 'issue-table');
+  const colW = (c) => state.tableColW[c.key] || c.w;
+  tbl.style.width = TABLE_COLS.reduce((s, c) => s + colW(c), 0) + 'px';
+
+  // colgroup으로 너비 제어
+  const cg = el('colgroup');
+  const colEls = {};
+  for (const c of TABLE_COLS) {
+    const col = document.createElement('col');
+    col.style.width = colW(c) + 'px';
+    colEls[c.key] = col;
+    cg.appendChild(col);
+  }
+  tbl.appendChild(cg);
+
+  // 헤더 + 리사이즈 핸들
   const thead = el('thead');
   const htr = el('tr');
-  for (const h of ['', '키', '요약', '유형', '상태', '담당자', '우선순위', '시작', '마감', '진척도']) {
-    htr.appendChild(el('th', null, h));
+  for (const c of TABLE_COLS) {
+    const th = el('th', null, c.label);
+    if (!c.fixed) {
+      const grip = el('span', 'col-resize');
+      grip.onmousedown = (downEv) => {
+        downEv.preventDefault();
+        const startX = downEv.clientX;
+        const startW = colW(c);
+        const move = (ev) => {
+          const nw = Math.max(40, startW + (ev.clientX - startX));
+          state.tableColW[c.key] = nw;
+          colEls[c.key].style.width = nw + 'px';
+          tbl.style.width = TABLE_COLS.reduce((s, x) => s + colW(x), 0) + 'px';
+        };
+        const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
+        document.addEventListener('mousemove', move);
+        document.addEventListener('mouseup', up);
+      };
+      th.appendChild(grip);
+    }
+    htr.appendChild(th);
   }
   thead.appendChild(htr);
   tbl.appendChild(thead);
@@ -957,28 +1045,12 @@ function renderTable(issues) {
   for (const it of issues) {
     const tr = el('tr');
     const overdue = it.due && it.due < today && it.statusCategory !== 'done';
-    // 색상 점
-    const tdC = el('td');
-    const dot = el('span', 'tbl-dot');
-    dot.style.background = state.colors[it.key] || statusColor(it);
-    tdC.appendChild(dot);
-    tr.appendChild(tdC);
-    // 키(링크)
-    const tdK = el('td');
-    const kEl = el('span', 'link', it.key);
-    kEl.style.cursor = 'pointer';
-    kEl.onclick = () => openIssue(it.key);
-    tdK.appendChild(kEl);
-    tr.appendChild(tdK);
-    tr.appendChild(el('td', null, it.summary || ''));
-    tr.appendChild(el('td', null, it.type || ''));
-    tr.appendChild(el('td', null, it.status || ''));
-    tr.appendChild(el('td', null, it.assigneeName || '미지정'));
-    tr.appendChild(el('td', null, it.priority || ''));
-    tr.appendChild(el('td', null, it.start || ''));
-    const tdDue = el('td', overdue ? 'tbl-overdue' : null, it.due || '');
-    tr.appendChild(tdDue);
-    tr.appendChild(el('td', null, it.progress != null ? `${it.progress}%` : ''));
+    for (const c of TABLE_COLS) {
+      const td = el('td', c.overdue && overdue ? 'tbl-overdue' : null);
+      if (c.cell) td.appendChild(c.cell(it));
+      else td.textContent = c.text(it);
+      tr.appendChild(td);
+    }
     tbody.appendChild(tr);
   }
   tbl.appendChild(tbody);
@@ -1032,6 +1104,9 @@ function render(restoreScroll) {
   document.getElementById('preset-btn').onclick = () => {
     prPanel.style.display = prPanel.style.display === 'none' ? 'block' : 'none';
   };
+
+  // 정렬 패널 (state.sortOpen 동안 열린 상태 유지)
+  if (state.sortOpen) root().appendChild(renderSortPanel());
 
   // 고급 필터 패널 (state.advOpen에 따라 표시 — 필터 변경 후에도 열린 상태 유지)
   if (state.advOpen) root().appendChild(renderAdvancedFilterPanel());
@@ -1280,9 +1355,10 @@ function renderTimeline({ issues, rangeStart, totalDays }) {
         pf.style.width = `${Math.min(100, it.progress)}%`;
         bar.appendChild(pf);
       }
-      // 바 라벨: 주=요약, 개월=key, 분기=없음(너무 좁음). overflow는 CSS로 클립.
-      const barText = state.zoom === 'week' ? (it.summary || it.key) : state.zoom === 'month' ? it.key : '';
-      if (barText) bar.appendChild(el('span', 'bar-label', barText));
+      // 바 라벨: TASK 이름(요약) + 담당자. 좁으면 CSS로 클립.
+      const lab = el('span', 'bar-label', it.summary || it.key);
+      if (it.assigneeName) lab.appendChild(el('span', 'bar-asg', ' · ' + it.assigneeName));
+      bar.appendChild(lab);
       if (state.colors[it.key]) {
         // 사용자 지정 색. 흰색/검정만 글자색 대응(흰 배경에 흰 글씨 방지)
         const c = state.colors[it.key];

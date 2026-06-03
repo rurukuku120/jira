@@ -2459,8 +2459,6 @@
     filters: [],
     assignees: [],
     // 프로젝트 배정 가능 사용자 [{id, name}]
-    allLabels: [],
-    // 사이트 전역 라벨 목록
     selectedFilterId: "",
     customJql: "",
     zoom: "week",
@@ -2468,10 +2466,10 @@
     // 확대/축소 배율 (+/- 버튼, 0.4~4)
     view: "tree",
     // 그룹화: flat | assignee | epic | tree | priority | type | label | duebucket
-    sortKey: "duedate",
-    // duedate | start | priority | created | key
-    sortDir: "asc",
-    // asc | desc
+    sorts: [{ key: "duedate", dir: "asc" }],
+    // 다단계 정렬(위에서부터 우선)
+    sortOpen: false,
+    // 정렬 패널 열림
     assigneeIds: [],
     // 선택된 담당자 accountId 배열
     includeUnassigned: false,
@@ -2500,6 +2498,8 @@
     // 프로젝트 버전 [{name, releaseDate, released}]
     presets: {},
     // 보기 프리셋 { name: config }
+    tableColW: {},
+    // 표 뷰 컬럼 너비 오버라이드 { colKey: px }
     title: "\uB2F9\uC2E0\uC758 \uD0C0\uC784\uB77C\uC778",
     collapsed: {},
     // { epicKey: true } 접힘 상태
@@ -2519,12 +2519,11 @@
       const context = await import_bridge.view.getContext();
       state.projectKey = context?.extension?.project?.key || context?.extension?.project?.id;
       state.myAccountId = context?.accountId || null;
-      const [{ filters }, { title }, asg, col, lbl, ver, pre] = await Promise.all([
+      const [{ filters }, { title }, asg, col, ver, pre] = await Promise.all([
         (0, import_bridge.invoke)("listFilters"),
         (0, import_bridge.invoke)("getTitle"),
         (0, import_bridge.invoke)("listAssignees", { projectKey: state.projectKey }),
         (0, import_bridge.invoke)("getIssueColors"),
-        (0, import_bridge.invoke)("listLabels"),
         (0, import_bridge.invoke)("listVersions", { projectKey: state.projectKey }),
         (0, import_bridge.invoke)("getPresets")
       ]);
@@ -2532,7 +2531,6 @@
       state.title = title || "\uB2F9\uC2E0\uC758 \uD0C0\uC784\uB77C\uC778";
       state.assignees = asg && asg.assignees || [];
       state.colors = col && col.colors || {};
-      state.allLabels = lbl && lbl.labels || [];
       state.versions = ver && ver.versions || [];
       state.presets = pre && pre.presets || {};
       await loadAll();
@@ -2730,27 +2728,37 @@
     });
   }
   var PRIORITY_RANK = { Highest: 5, High: 4, Medium: 3, Low: 2, Lowest: 1 };
+  var SORT_FIELDS = [
+    ["duedate", "\uB9C8\uAC10\uC77C"],
+    ["start", "\uC2DC\uC791\uC77C"],
+    ["priority", "\uC6B0\uC120\uC21C\uC704"],
+    ["created", "\uC0DD\uC131\uC77C"],
+    ["key", "\uD0A4"]
+  ];
+  function sortVal(it, key) {
+    switch (key) {
+      case "start":
+        return it.start || it.due || "";
+      case "created":
+        return it.created || "";
+      case "key":
+        return it.key;
+      case "priority":
+        return PRIORITY_RANK[it.priority] || 0;
+      case "duedate":
+      default:
+        return it.due || it.start || "";
+    }
+  }
   function sortIssues(issues) {
-    const dir = state.sortDir === "desc" ? -1 : 1;
-    const val = (it) => {
-      switch (state.sortKey) {
-        case "start":
-          return it.start || it.due || "";
-        case "created":
-          return it.created || "";
-        case "key":
-          return it.key;
-        case "priority":
-          return PRIORITY_RANK[it.priority] || 0;
-        case "duedate":
-        default:
-          return it.due || it.start || "";
-      }
-    };
+    const sorts = state.sorts.length ? state.sorts : [{ key: "duedate", dir: "asc" }];
     return [...issues].sort((a, b) => {
-      const va = val(a), vb = val(b);
-      if (va < vb) return -1 * dir;
-      if (va > vb) return 1 * dir;
+      for (const s of sorts) {
+        const dir = s.dir === "desc" ? -1 : 1;
+        const va = sortVal(a, s.key), vb = sortVal(b, s.key);
+        if (va < vb) return -1 * dir;
+        if (va > vb) return 1 * dir;
+      }
       return 0;
     });
   }
@@ -3003,31 +3011,17 @@
       };
       right.appendChild(viewSel);
     }
-    const sortSel = el("select");
-    sortSel.title = "\uC815\uB82C \uAE30\uC900";
-    for (const [val, label] of [
-      ["duedate", "\uC815\uB82C: \uB9C8\uAC10\uC77C"],
-      ["start", "\uC815\uB82C: \uC2DC\uC791\uC77C"],
-      ["priority", "\uC815\uB82C: \uC6B0\uC120\uC21C\uC704"],
-      ["created", "\uC815\uB82C: \uC0DD\uC131\uC77C"],
-      ["key", "\uC815\uB82C: \uD0A4"]
-    ]) {
-      const opt = new Option(label, val);
-      if (state.sortKey === val) opt.selected = true;
-      sortSel.appendChild(opt);
-    }
-    sortSel.onchange = () => {
-      state.sortKey = sortSel.value;
+    const sortBtn = el(
+      "button",
+      state.sortOpen ? "active" : null,
+      `\uC815\uB82C (${state.sorts.length})`
+    );
+    sortBtn.title = "\uB2E4\uB2E8\uACC4 \uC815\uB82C (\uC704\uC5D0\uC11C\uBD80\uD130 \uC6B0\uC120 \uC801\uC6A9)";
+    sortBtn.onclick = () => {
+      state.sortOpen = !state.sortOpen;
       render();
     };
-    right.appendChild(sortSel);
-    const dirBtn = el("button", "sort-dir", state.sortDir === "asc" ? "\u2191" : "\u2193");
-    dirBtn.title = state.sortDir === "asc" ? "\uC624\uB984\uCC28\uC21C" : "\uB0B4\uB9BC\uCC28\uC21C";
-    dirBtn.onclick = () => {
-      state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
-      render();
-    };
-    right.appendChild(dirBtn);
+    right.appendChild(sortBtn);
     if (gantt) {
       const zoomBox = el("div", "zoom");
       for (const k of ["week", "month", "quarter"]) {
@@ -3221,8 +3215,7 @@
   }
   var PRESET_KEYS = [
     "view",
-    "sortKey",
-    "sortDir",
+    "sorts",
     "zoom",
     "zoomScale",
     "layout",
@@ -3306,6 +3299,64 @@
     }
     return panel;
   }
+  function renderSortPanel() {
+    const panel = el("div", "manage");
+    panel.appendChild(el("div", "manage-title", "\uC815\uB82C (\uC704\uC5D0\uC11C\uBD80\uD130 \uC6B0\uC120 \uC801\uC6A9)"));
+    state.sorts.forEach((s, idx) => {
+      const row = el("div", "sort-row");
+      row.appendChild(el("span", "sort-idx", `${idx + 1}.`));
+      const sel = el("select");
+      for (const [val, label] of SORT_FIELDS) {
+        const opt = new Option(label, val);
+        if (s.key === val) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      sel.onchange = () => {
+        state.sorts[idx].key = sel.value;
+        render();
+      };
+      row.appendChild(sel);
+      const dir = el("button", "sort-dir", s.dir === "asc" ? "\u2191 \uC624\uB984" : "\u2193 \uB0B4\uB9BC");
+      dir.onclick = () => {
+        state.sorts[idx].dir = s.dir === "asc" ? "desc" : "asc";
+        render();
+      };
+      row.appendChild(dir);
+      const up = el("button", "mi-del", "\u25B2");
+      up.disabled = idx === 0;
+      up.onclick = () => {
+        const a = state.sorts;
+        [a[idx - 1], a[idx]] = [a[idx], a[idx - 1]];
+        render();
+      };
+      const down = el("button", "mi-del", "\u25BC");
+      down.disabled = idx === state.sorts.length - 1;
+      down.onclick = () => {
+        const a = state.sorts;
+        [a[idx + 1], a[idx]] = [a[idx], a[idx + 1]];
+        render();
+      };
+      row.append(up, down);
+      if (state.sorts.length > 1) {
+        const rm = el("button", "mi-del", "\xD7");
+        rm.onclick = () => {
+          state.sorts.splice(idx, 1);
+          render();
+        };
+        row.appendChild(rm);
+      }
+      panel.appendChild(row);
+    });
+    const addBtn = el("button", "primary", "+ \uC815\uB82C \uAE30\uC900 \uCD94\uAC00");
+    addBtn.onclick = () => {
+      const used = new Set(state.sorts.map((s) => s.key));
+      const next = (SORT_FIELDS.find(([v]) => !used.has(v)) || SORT_FIELDS[0])[0];
+      state.sorts.push({ key: next, dir: "asc" });
+      render();
+    };
+    panel.appendChild(addBtn);
+    return panel;
+  }
   function renderAdvancedFilterPanel() {
     const panel = el("div", "manage");
     panel.appendChild(el("div", "manage-title", "\uACE0\uAE09 \uD544\uD130"));
@@ -3330,7 +3381,7 @@
     const uniq = (arr) => [...new Set(arr)].sort((a, b) => String(a).localeCompare(String(b)));
     const priorities = uniq(issues.map((i) => i.priority).filter(Boolean));
     const types = uniq(issues.map((i) => i.type).filter(Boolean));
-    const labels = state.allLabels.length ? uniq(state.allLabels) : uniq(issues.flatMap((i) => i.labels || []));
+    const labels = uniq(issues.flatMap((i) => i.labels || []));
     const toggle = (arrName) => (v, on) => {
       const arr = state[arrName];
       state[arrName] = on ? [...arr, v] : arr.filter((x) => x !== v);
@@ -3368,13 +3419,67 @@
     panel.appendChild(resetBtn);
     return panel;
   }
+  var TABLE_COLS = [
+    { key: "color", label: "", w: 28, fixed: true, cell: (it) => {
+      const d = el("span", "tbl-dot");
+      d.style.background = state.colors[it.key] || statusColor(it);
+      return d;
+    } },
+    { key: "key", label: "\uD0A4", w: 90, cell: (it) => {
+      const e = el("span", "link", it.key);
+      e.style.cursor = "pointer";
+      e.onclick = () => openIssue(it.key);
+      return e;
+    } },
+    { key: "summary", label: "\uC694\uC57D", w: 300, text: (it) => it.summary || "" },
+    { key: "type", label: "\uC720\uD615", w: 90, text: (it) => it.type || "" },
+    { key: "status", label: "\uC0C1\uD0DC", w: 100, text: (it) => it.status || "" },
+    { key: "assignee", label: "\uB2F4\uB2F9\uC790", w: 120, text: (it) => it.assigneeName || "\uBBF8\uC9C0\uC815" },
+    { key: "priority", label: "\uC6B0\uC120\uC21C\uC704", w: 90, text: (it) => it.priority || "" },
+    { key: "start", label: "\uC2DC\uC791", w: 110, text: (it) => it.start || "" },
+    { key: "due", label: "\uB9C8\uAC10", w: 110, text: (it) => it.due || "", overdue: true },
+    { key: "progress", label: "\uC9C4\uCC99\uB3C4", w: 80, text: (it) => it.progress != null ? `${it.progress}%` : "" }
+  ];
   function renderTable(issues) {
     const wrap = el("div", "table-wrap");
     const tbl = el("table", "issue-table");
+    const colW2 = (c) => state.tableColW[c.key] || c.w;
+    tbl.style.width = TABLE_COLS.reduce((s, c) => s + colW2(c), 0) + "px";
+    const cg = el("colgroup");
+    const colEls = {};
+    for (const c of TABLE_COLS) {
+      const col = document.createElement("col");
+      col.style.width = colW2(c) + "px";
+      colEls[c.key] = col;
+      cg.appendChild(col);
+    }
+    tbl.appendChild(cg);
     const thead = el("thead");
     const htr = el("tr");
-    for (const h of ["", "\uD0A4", "\uC694\uC57D", "\uC720\uD615", "\uC0C1\uD0DC", "\uB2F4\uB2F9\uC790", "\uC6B0\uC120\uC21C\uC704", "\uC2DC\uC791", "\uB9C8\uAC10", "\uC9C4\uCC99\uB3C4"]) {
-      htr.appendChild(el("th", null, h));
+    for (const c of TABLE_COLS) {
+      const th = el("th", null, c.label);
+      if (!c.fixed) {
+        const grip = el("span", "col-resize");
+        grip.onmousedown = (downEv) => {
+          downEv.preventDefault();
+          const startX = downEv.clientX;
+          const startW = colW2(c);
+          const move = (ev) => {
+            const nw = Math.max(40, startW + (ev.clientX - startX));
+            state.tableColW[c.key] = nw;
+            colEls[c.key].style.width = nw + "px";
+            tbl.style.width = TABLE_COLS.reduce((s, x) => s + colW2(x), 0) + "px";
+          };
+          const up = () => {
+            document.removeEventListener("mousemove", move);
+            document.removeEventListener("mouseup", up);
+          };
+          document.addEventListener("mousemove", move);
+          document.addEventListener("mouseup", up);
+        };
+        th.appendChild(grip);
+      }
+      htr.appendChild(th);
     }
     thead.appendChild(htr);
     tbl.appendChild(thead);
@@ -3383,26 +3488,12 @@
     for (const it of issues) {
       const tr = el("tr");
       const overdue = it.due && it.due < today && it.statusCategory !== "done";
-      const tdC = el("td");
-      const dot = el("span", "tbl-dot");
-      dot.style.background = state.colors[it.key] || statusColor(it);
-      tdC.appendChild(dot);
-      tr.appendChild(tdC);
-      const tdK = el("td");
-      const kEl = el("span", "link", it.key);
-      kEl.style.cursor = "pointer";
-      kEl.onclick = () => openIssue(it.key);
-      tdK.appendChild(kEl);
-      tr.appendChild(tdK);
-      tr.appendChild(el("td", null, it.summary || ""));
-      tr.appendChild(el("td", null, it.type || ""));
-      tr.appendChild(el("td", null, it.status || ""));
-      tr.appendChild(el("td", null, it.assigneeName || "\uBBF8\uC9C0\uC815"));
-      tr.appendChild(el("td", null, it.priority || ""));
-      tr.appendChild(el("td", null, it.start || ""));
-      const tdDue = el("td", overdue ? "tbl-overdue" : null, it.due || "");
-      tr.appendChild(tdDue);
-      tr.appendChild(el("td", null, it.progress != null ? `${it.progress}%` : ""));
+      for (const c of TABLE_COLS) {
+        const td = el("td", c.overdue && overdue ? "tbl-overdue" : null);
+        if (c.cell) td.appendChild(c.cell(it));
+        else td.textContent = c.text(it);
+        tr.appendChild(td);
+      }
       tbody.appendChild(tr);
     }
     tbl.appendChild(tbody);
@@ -3453,6 +3544,7 @@
     document.getElementById("preset-btn").onclick = () => {
       prPanel.style.display = prPanel.style.display === "none" ? "block" : "none";
     };
+    if (state.sortOpen) root().appendChild(renderSortPanel());
     if (state.advOpen) root().appendChild(renderAdvancedFilterPanel());
     const d = state.data;
     if (!d || !d.issues || d.issues.length === 0) {
@@ -3670,8 +3762,9 @@
           pf.style.width = `${Math.min(100, it.progress)}%`;
           bar.appendChild(pf);
         }
-        const barText = state.zoom === "week" ? it.summary || it.key : state.zoom === "month" ? it.key : "";
-        if (barText) bar.appendChild(el("span", "bar-label", barText));
+        const lab = el("span", "bar-label", it.summary || it.key);
+        if (it.assigneeName) lab.appendChild(el("span", "bar-asg", " \xB7 " + it.assigneeName));
+        bar.appendChild(lab);
         if (state.colors[it.key]) {
           const c = state.colors[it.key];
           bar.style.background = c;
