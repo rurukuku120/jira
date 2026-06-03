@@ -1,7 +1,7 @@
 # 개인정보 처리방침 (Privacy Policy)
 
 **앱 이름:** 당신의 타임라인 (your-timeline) — Jira 프로젝트용 타임라인 Forge 앱
-**문의:** cukirang@nexon.co.kr
+**문의:** cukirang@gmail.com
 **최종 수정일:** 2026-06-03
 
 본 앱은 Atlassian Forge 플랫폼 위에서 동작하며, 사용자의 Jira 데이터를 **표시·편집**하기 위한
@@ -61,4 +61,4 @@
 ## 7. 문의
 
 본 방침이나 데이터 처리에 대한 문의는 다음으로 연락 주십시오.
-**cukirang@nexon.co.kr**
+**cukirang@gmail.com**
