@@ -270,6 +270,25 @@ resolver.define('updateIssueDates', async (req) => {
   }
 });
 
+const ISSUE_COLOR_KEY = 'issue-colors'; // { issueKey: '#hex' }
+
+/** 이슈별 사용자 지정 색상 맵 조회 */
+resolver.define('getIssueColors', async () => {
+  const colors = (await storage.get(ISSUE_COLOR_KEY)) || {};
+  return { colors };
+});
+
+/** 이슈 색상 지정/해제. payload: { key, color } (color 비우면 해제) */
+resolver.define('setIssueColor', async (req) => {
+  const { key, color } = req.payload || {};
+  if (!key) return { error: 'key가 필요합니다.' };
+  const colors = (await storage.get(ISSUE_COLOR_KEY)) || {};
+  if (color && /^#[0-9a-fA-F]{6}$/.test(color)) colors[key] = color;
+  else delete colors[key];
+  await storage.set(ISSUE_COLOR_KEY, colors);
+  return { colors };
+});
+
 const PAGE_TITLE_KEY = 'page-title';
 
 /** 페이지 제목 조회 */

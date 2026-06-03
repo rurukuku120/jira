@@ -118,7 +118,24 @@ body {
   display: flex; align-items: center; gap: 6px; padding: 0 8px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.row-label .key { color: var(--subtle); font-size: 11px; }
+.row-label .key { color: var(--subtle); font-size: 11px; flex: 0 0 auto; }
+.row-label .sum { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
+/* 클릭 가능한 이슈 라벨을 링크 색상으로 */
+.row-label .link { color: #4c9aff; }
+.issue-label.clickable:hover .sum { text-decoration: underline; }
+
+/* 이슈 색상 지정 컨트롤 */
+.row-color { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 2px; }
+.color-input { width: 16px; height: 16px; padding: 0; border: 1px solid var(--grid); border-radius: 3px; background: none; cursor: pointer; }
+.color-input::-webkit-color-swatch-wrapper { padding: 0; }
+.color-input::-webkit-color-swatch { border: none; border-radius: 2px; }
+.color-reset { padding: 0 4px; font-size: 11px; line-height: 1; color: var(--subtle); border: 1px solid var(--grid); border-radius: 3px; background: var(--bg); cursor: pointer; }
+
+/* 날짜 이동 버튼 (행 호버 시 표시) */
+.row-goto { flex: 0 0 auto; margin-left: auto; border: none; background: none; cursor: pointer; font-size: 12px; padding: 0 2px; opacity: 0; }
+.row:hover .row-goto { opacity: 0.75; }
+.row-goto:hover { opacity: 1 !important; }
+
 .row-track { position: relative; border-bottom: 1px solid var(--grid); flex: 1; }
 .bar {
   position: absolute; top: 6px; height: calc(var(--row-h) - 14px);

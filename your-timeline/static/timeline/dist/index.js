@@ -2478,7 +2478,9 @@
     data: null,
     // 마지막 로드 결과 { issues, startFieldId, rangeStart, totalDays }
     holidays: {},
-    custom: {}
+    custom: {},
+    colors: {}
+    // { issueKey: '#hex' } 사용자 지정 이슈 색상
   };
   var root = () => document.getElementById("root");
   var colW = () => Math.max(2, Math.round(ZOOM[state.zoom].w * state.zoomScale));
@@ -2488,14 +2490,16 @@
     try {
       const context = await import_bridge.view.getContext();
       state.projectKey = context?.extension?.project?.key || context?.extension?.project?.id;
-      const [{ filters }, { title }, asg] = await Promise.all([
+      const [{ filters }, { title }, asg, col] = await Promise.all([
         (0, import_bridge.invoke)("listFilters"),
         (0, import_bridge.invoke)("getTitle"),
-        (0, import_bridge.invoke)("listAssignees", { projectKey: state.projectKey })
+        (0, import_bridge.invoke)("listAssignees", { projectKey: state.projectKey }),
+        (0, import_bridge.invoke)("getIssueColors")
       ]);
       state.filters = filters || [];
       state.title = title || "\uB2F9\uC2E0\uC758 \uD0C0\uC784\uB77C\uC778";
       state.assignees = asg && asg.assignees || [];
+      state.colors = col && col.colors || {};
       await loadAll();
     } catch (e) {
       root().innerHTML = `<div class="error">\uC624\uB958: ${e.message || e}</div>`;
@@ -2753,18 +2757,6 @@
     const left = el("div", "tb-group tb-left");
     const right = el("div", "tb-group tb-right");
     toolbar.append(left, right);
-    const d = state.data;
-    if (d && d.issues) {
-      const total = d.issues.length;
-      const shown = statusFiltered(d.issues).length;
-      const cnt = el("div", "tb-count", shown === total ? `${total}\uAC74` : `${shown}/${total}\uAC74`);
-      if (d.truncated) {
-        const w = el("span", "tb-warn", " \u26A0 1000+");
-        w.title = "\uC774\uC288\uAC00 1000\uAC74\uC744 \uCD08\uACFC\uD574 \uC77C\uBD80\uB9CC \uD45C\uC2DC\uB429\uB2C8\uB2E4. JQL/\uD544\uD130\uB85C \uBC94\uC704\uB97C \uC881\uD600 \uC8FC\uC138\uC694.";
-        cnt.appendChild(w);
-      }
-      left.appendChild(cnt);
-    }
     const titleEl = el("strong", "page-title", state.title);
     titleEl.title = "\uD074\uB9AD\uD558\uC5EC \uC81C\uBAA9 \uD3B8\uC9D1";
     titleEl.onclick = () => startEditTitle(titleEl);
@@ -2829,6 +2821,18 @@
     left.appendChild(saveFilterBtn);
     left.appendChild(renderAssigneePicker());
     left.appendChild(renderStatusPicker());
+    const d = state.data;
+    if (d && d.issues) {
+      const total = d.issues.length;
+      const shown = statusFiltered(d.issues).length;
+      const cnt = el("div", "tb-count", shown === total ? `${total}\uAC74` : `${shown}/${total}\uAC74`);
+      if (d.truncated) {
+        const w = el("span", "tb-warn", " \u26A0 1000+");
+        w.title = "\uC774\uC288\uAC00 1000\uAC74\uC744 \uCD08\uACFC\uD574 \uC77C\uBD80\uB9CC \uD45C\uC2DC\uB429\uB2C8\uB2E4. JQL/\uD544\uD130\uB85C \uBC94\uC704\uB97C \uC881\uD600 \uC8FC\uC138\uC694.";
+        cnt.appendChild(w);
+      }
+      left.appendChild(cnt);
+    }
     if (state.customJql || state.selectedFilterId || state.assigneeIds.length || state.includeUnassigned || state.statusCats.length) {
       const resetBtn = el("button", "tb-reset", "\uD544\uD130 \uCD08\uAE30\uD654");
       resetBtn.onclick = async () => {
@@ -3113,6 +3117,43 @@
     if (it.statusCategory === "new") return "bar new";
     return "bar";
   }
+  function statusColor(it) {
+    return it.statusCategory === "done" ? "#36b37e" : it.statusCategory === "new" ? "#8993a4" : "#4c9aff";
+  }
+  async function applyIssueColor(key, color) {
+    try {
+      const r = await (0, import_bridge.invoke)("setIssueColor", { key, color: color || "" });
+      if (r && r.error) {
+        showError(new Error(r.error));
+        return;
+      }
+      state.colors = r && r.colors || state.colors;
+      render();
+    } catch (e) {
+      showError(e);
+    }
+  }
+  function makeColorControl(it) {
+    const wrap = el("span", "row-color");
+    const cur = state.colors[it.key];
+    const inp = el("input", "color-input");
+    inp.type = "color";
+    inp.value = cur || statusColor(it);
+    inp.title = "\uC774\uC288 \uC0C9\uC0C1 \uC9C0\uC815";
+    inp.onclick = (ev) => ev.stopPropagation();
+    inp.onchange = () => applyIssueColor(it.key, inp.value);
+    wrap.appendChild(inp);
+    if (cur) {
+      const reset = el("button", "color-reset", "\xD7");
+      reset.title = "\uAE30\uBCF8\uC0C9\uC73C\uB85C \uB418\uB3CC\uB9AC\uAE30";
+      reset.onclick = (ev) => {
+        ev.stopPropagation();
+        applyIssueColor(it.key, null);
+      };
+      wrap.appendChild(reset);
+    }
+    return wrap;
+  }
   function renderTimeline({ issues, rangeStart, totalDays }) {
     const W = colW();
     const wrap = el("div", "timeline-wrap");
@@ -3175,10 +3216,18 @@
         };
         label.appendChild(c);
       }
+      label.appendChild(makeColorControl(it));
       label.appendChild(el("span", "key", it.key));
-      label.appendChild(el("span", "sum", it.summary || ""));
+      label.appendChild(el("span", "sum link", it.summary || ""));
       label.title = `${it.key} \uC5F4\uAE30`;
       label.onclick = () => openIssue(it.key);
+      const goBtn = el("button", "row-goto", "\u{1F4C5}");
+      goBtn.title = "\uC774 \uC774\uC288 \uB0A0\uC9DC\uB85C \uC774\uB3D9";
+      goBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        scrollToDate(it.start || it.due);
+      };
+      label.appendChild(goBtn);
       row.appendChild(label);
       const track = el("div", "row-track");
       track.style.width = `${trackW}px`;
@@ -3191,6 +3240,7 @@
         const bar = el("div", barClass(it) + " clickable", barText);
         bar.style.left = `${offset * W + 1}px`;
         bar.style.width = `${span * W - 2}px`;
+        if (state.colors[it.key]) bar.style.background = state.colors[it.key];
         bar.title = `${it.key} \xB7 ${s} ~ ${e} \xB7 ${it.status} (\uD074\uB9AD\uD558\uC5EC \uC5F4\uAE30 \xB7 \uC591\uB05D/\uAC00\uC6B4\uB370 \uB4DC\uB798\uADF8\uB85C \uAE30\uAC04 \uBCC0\uACBD)`;
         const hL = el("div", "bar-handle left");
         const hR = el("div", "bar-handle right");
@@ -3343,11 +3393,14 @@
     }
   }
   function scrollToToday() {
+    scrollToDate(todayStr());
+  }
+  function scrollToDate(dateStr) {
     const wrap = document.querySelector(".timeline-wrap");
     const d = state.data;
-    if (!wrap || !d || !d.rangeStart) return;
-    const tOff = dayDiff(d.rangeStart, todayStr());
-    const x = tOff * colW() - wrap.clientWidth / 2;
+    if (!wrap || !d || !d.rangeStart || !dateStr) return;
+    const off = dayDiff(d.rangeStart, dateStr);
+    const x = off * colW() - wrap.clientWidth / 2;
     wrap.scrollLeft = Math.max(0, x);
   }
   main();

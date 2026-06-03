@@ -52,6 +52,7 @@ const state = {
   data: null,         // 마지막 로드 결과 { issues, startFieldId, rangeStart, totalDays }
   holidays: {},
   custom: {},
+  colors: {},         // { issueKey: '#hex' } 사용자 지정 이슈 색상
 };
 
 const root = () => document.getElementById('root');
@@ -64,14 +65,16 @@ async function main() {
     state.projectKey =
       context?.extension?.project?.key || context?.extension?.project?.id;
 
-    const [{ filters }, { title }, asg] = await Promise.all([
+    const [{ filters }, { title }, asg, col] = await Promise.all([
       invoke('listFilters'),
       invoke('getTitle'),
       invoke('listAssignees', { projectKey: state.projectKey }),
+      invoke('getIssueColors'),
     ]);
     state.filters = filters || [];
     state.title = title || '당신의 타임라인';
     state.assignees = (asg && asg.assignees) || [];
+    state.colors = (col && col.colors) || {};
 
     await loadAll();
   } catch (e) {
@@ -351,20 +354,6 @@ function renderToolbar() {
   const right = el('div', 'tb-group tb-right');
   toolbar.append(left, right);
 
-  // 이슈 건수 + 한도 경고 (제일 왼쪽)
-  const d = state.data;
-  if (d && d.issues) {
-    const total = d.issues.length;
-    const shown = statusFiltered(d.issues).length;
-    const cnt = el('div', 'tb-count', shown === total ? `${total}건` : `${shown}/${total}건`);
-    if (d.truncated) {
-      const w = el('span', 'tb-warn', ' ⚠ 1000+');
-      w.title = '이슈가 1000건을 초과해 일부만 표시됩니다. JQL/필터로 범위를 좁혀 주세요.';
-      cnt.appendChild(w);
-    }
-    left.appendChild(cnt);
-  }
-
   // 편집 가능한 제목
   const titleEl = el('strong', 'page-title', state.title);
   titleEl.title = '클릭하여 제목 편집';
@@ -431,6 +420,20 @@ function renderToolbar() {
 
   // 상태 범주 필터 (해야 할 일 / 진행 중 / 완료)
   left.appendChild(renderStatusPicker());
+
+  // 이슈 건수 + 한도 경고 (상태 범주 뒤)
+  const d = state.data;
+  if (d && d.issues) {
+    const total = d.issues.length;
+    const shown = statusFiltered(d.issues).length;
+    const cnt = el('div', 'tb-count', shown === total ? `${total}건` : `${shown}/${total}건`);
+    if (d.truncated) {
+      const w = el('span', 'tb-warn', ' ⚠ 1000+');
+      w.title = '이슈가 1000건을 초과해 일부만 표시됩니다. JQL/필터로 범위를 좁혀 주세요.';
+      cnt.appendChild(w);
+    }
+    left.appendChild(cnt);
+  }
 
   // 필터 초기화 (필터/담당자/상태가 걸려 있을 때만)
   if (state.customJql || state.selectedFilterId || state.assigneeIds.length || state.includeUnassigned || state.statusCats.length) {
@@ -734,6 +737,42 @@ function barClass(it) {
   return 'bar'; // indeterminate = 진행
 }
 
+// 상태 범주 기본 색
+function statusColor(it) {
+  return it.statusCategory === 'done' ? '#36b37e'
+    : it.statusCategory === 'new' ? '#8993a4' : '#4c9aff';
+}
+
+// 이슈 색상 저장/해제 후 재렌더
+async function applyIssueColor(key, color) {
+  try {
+    const r = await invoke('setIssueColor', { key, color: color || '' });
+    if (r && r.error) { showError(new Error(r.error)); return; }
+    state.colors = (r && r.colors) || state.colors;
+    render();
+  } catch (e) { showError(e); }
+}
+
+// 이슈 색상 지정 컨트롤 (네이티브 컬러 입력 + 기본색 해제)
+function makeColorControl(it) {
+  const wrap = el('span', 'row-color');
+  const cur = state.colors[it.key];
+  const inp = el('input', 'color-input');
+  inp.type = 'color';
+  inp.value = cur || statusColor(it);
+  inp.title = '이슈 색상 지정';
+  inp.onclick = (ev) => ev.stopPropagation();
+  inp.onchange = () => applyIssueColor(it.key, inp.value);
+  wrap.appendChild(inp);
+  if (cur) {
+    const reset = el('button', 'color-reset', '×');
+    reset.title = '기본색으로 되돌리기';
+    reset.onclick = (ev) => { ev.stopPropagation(); applyIssueColor(it.key, null); };
+    wrap.appendChild(reset);
+  }
+  return wrap;
+}
+
 function renderTimeline({ issues, rangeStart, totalDays }) {
   const W = colW();
   const wrap = el('div', 'timeline-wrap');
@@ -808,10 +847,17 @@ function renderTimeline({ issues, rangeStart, totalDays }) {
       c.onclick = (ev) => { ev.stopPropagation(); opts.onToggle(); };
       label.appendChild(c);
     }
+    label.appendChild(makeColorControl(it));
     label.appendChild(el('span', 'key', it.key));
-    label.appendChild(el('span', 'sum', it.summary || ''));
+    label.appendChild(el('span', 'sum link', it.summary || ''));
     label.title = `${it.key} 열기`;
     label.onclick = () => openIssue(it.key);
+
+    // 이 이슈 날짜로 타임라인 스크롤 (이슈 열기와 구분 위해 stopPropagation)
+    const goBtn = el('button', 'row-goto', '📅');
+    goBtn.title = '이 이슈 날짜로 이동';
+    goBtn.onclick = (ev) => { ev.stopPropagation(); scrollToDate(it.start || it.due); };
+    label.appendChild(goBtn);
     row.appendChild(label);
 
     const track = el('div', 'row-track');
@@ -826,6 +872,7 @@ function renderTimeline({ issues, rangeStart, totalDays }) {
       const bar = el('div', barClass(it) + ' clickable', barText);
       bar.style.left = `${offset * W + 1}px`;
       bar.style.width = `${span * W - 2}px`;
+      if (state.colors[it.key]) bar.style.background = state.colors[it.key]; // 사용자 지정 색
       bar.title = `${it.key} · ${s} ~ ${e} · ${it.status} (클릭하여 열기 · 양끝/가운데 드래그로 기간 변경)`;
       // 양끝 + 본체 드래그 핸들 (기간 조절 / 이동)
       const hL = el('div', 'bar-handle left');
@@ -977,12 +1024,15 @@ async function commitDates(it, nStart, nDue) {
   }
 }
 
-function scrollToToday() {
+function scrollToToday() { scrollToDate(todayStr()); }
+
+// 특정 날짜가 화면 중앙에 오도록 타임라인 가로 스크롤
+function scrollToDate(dateStr) {
   const wrap = document.querySelector('.timeline-wrap');
   const d = state.data;
-  if (!wrap || !d || !d.rangeStart) return;
-  const tOff = dayDiff(d.rangeStart, todayStr());
-  const x = tOff * colW() - wrap.clientWidth / 2;
+  if (!wrap || !d || !d.rangeStart || !dateStr) return;
+  const off = dayDiff(d.rangeStart, dateStr);
+  const x = off * colW() - wrap.clientWidth / 2;
   wrap.scrollLeft = Math.max(0, x);
 }
 
