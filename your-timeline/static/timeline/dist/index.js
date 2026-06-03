@@ -2507,9 +2507,12 @@
     // 마지막 로드 결과 { issues, startFieldId, rangeStart, totalDays }
     holidays: {},
     custom: {},
-    colors: {}
+    colors: {},
     // { issueKey: '#hex' } 사용자 지정 이슈 색상
+    licensed: true
+    // 라이선스 보유 여부(읽기 허용/쓰기 차단 게이트). undefined(개발/미등록)는 true로 간주
   };
+  var LISTING_URL = "https://marketplace.atlassian.com/";
   var root = () => document.getElementById("root");
   var colW = () => Math.max(2, Math.round(ZOOM[state.zoom].w * state.zoomScale));
   var ZOOM_MIN = 0.4;
@@ -2519,6 +2522,7 @@
       const context = await import_bridge.view.getContext();
       state.projectKey = context?.extension?.project?.key || context?.extension?.project?.id;
       state.myAccountId = context?.accountId || null;
+      state.licensed = !context?.license || context.license.active === true;
       const [{ filters }, { title }, asg, col, ver, pre] = await Promise.all([
         (0, import_bridge.invoke)("listFilters"),
         (0, import_bridge.invoke)("getTitle"),
@@ -3061,6 +3065,7 @@
     return toolbar;
   }
   function startEditTitle(titleEl) {
+    if (!ensureLicensed()) return;
     const input = el("input", "title-edit");
     input.type = "text";
     input.value = state.title;
@@ -3082,6 +3087,36 @@
   function showError(e) {
     root().appendChild(el("div", "error", `\uC624\uB958: ${e.message || e}`));
   }
+  var toastEl = null;
+  var toastTimer = null;
+  function toast(msg) {
+    if (!toastEl) {
+      toastEl = el("div", "toast");
+      document.body.appendChild(toastEl);
+    }
+    toastEl.textContent = msg;
+    toastEl.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove("show"), 3500);
+  }
+  function ensureLicensed() {
+    if (state.licensed) return true;
+    toast("\u{1F512} \uC720\uB8CC \uB77C\uC774\uC120\uC2A4\uAC00 \uD544\uC694\uD55C \uAE30\uB2A5\uC785\uB2C8\uB2E4. Marketplace\uC5D0\uC11C \uAD6C\uB3C5\uD574 \uC8FC\uC138\uC694.");
+    return false;
+  }
+  function renderLicenseBanner() {
+    const b = el("div", "license-banner");
+    b.append(el("span", "license-banner-icon", "\u{1F512}"));
+    b.append(el(
+      "span",
+      "license-banner-text",
+      "\uC77D\uAE30 \uC804\uC6A9 \uBAA8\uB4DC \u2014 \uB0A0\uC9DC \uBCC0\uACBD\xB7\uC0C9\uC0C1\xB7\uACF5\uD734\uC77C/\uD544\uD130/\uD504\uB9AC\uC14B \uC800\uC7A5\xB7\uC81C\uBAA9 \uBCC0\uACBD \uB4F1 \uD3B8\uC9D1 \uAE30\uB2A5\uC740 \uC720\uB8CC \uB77C\uC774\uC120\uC2A4\uAC00 \uD544\uC694\uD569\uB2C8\uB2E4."
+    ));
+    const btn = el("button", "license-banner-btn", "Marketplace\uC5D0\uC11C \uAD6C\uB3C5");
+    btn.onclick = () => import_bridge.router.open(LISTING_URL);
+    b.append(btn);
+    return b;
+  }
   function renderManagePanel() {
     const panel = el("div", "manage");
     const form = el("div", "manage-form");
@@ -3093,6 +3128,7 @@
     const addBtn = el("button", "primary", "\uCD94\uAC00");
     const msg = el("span", "manage-msg");
     addBtn.onclick = async () => {
+      if (!ensureLicensed()) return;
       const date = dateInput.value;
       if (!date) {
         msg.textContent = "\uB0A0\uC9DC\uB97C \uC120\uD0DD\uD558\uC138\uC694.";
@@ -3122,6 +3158,7 @@
         item.appendChild(el("span", "mi-name", name));
         const del = el("button", "mi-del", "\uC0AD\uC81C");
         del.onclick = async () => {
+          if (!ensureLicensed()) return;
           del.disabled = true;
           await (0, import_bridge.invoke)("removeCustomHoliday", { date });
           await loadAll();
@@ -3179,6 +3216,7 @@
     const saveBtn = el("button", "primary", "\uC800\uC7A5");
     const msg = el("span", "manage-msg");
     saveBtn.onclick = async () => {
+      if (!ensureLicensed()) return;
       const name = nameInput.value.trim();
       if (!name) {
         msg.textContent = "\uD544\uD130 \uC774\uB984\uC744 \uC785\uB825\uD558\uC138\uC694.";
@@ -3254,6 +3292,7 @@
     const saveBtn = el("button", "primary", "\uD604\uC7AC \uBCF4\uAE30 \uC800\uC7A5");
     const msg = el("span", "manage-msg");
     saveBtn.onclick = async () => {
+      if (!ensureLicensed()) return;
       const name = nameInput.value.trim();
       if (!name) {
         msg.textContent = "\uC774\uB984\uC744 \uC785\uB825\uD558\uC138\uC694.";
@@ -3287,6 +3326,7 @@
         apply.onclick = () => applyConfig(state.presets[n]);
         const del = el("button", "mi-del", "\uC0AD\uC81C");
         del.onclick = async () => {
+          if (!ensureLicensed()) return;
           del.disabled = true;
           const { presets } = await (0, import_bridge.invoke)("deletePreset", { name: n });
           state.presets = presets || {};
@@ -3519,6 +3559,7 @@
     const prevScroll = restoreScroll ? null : document.querySelector(".timeline-wrap")?.scrollLeft;
     root().innerHTML = "";
     root().appendChild(renderToolbar());
+    if (!state.licensed) root().appendChild(renderLicenseBanner());
     const panel = renderManagePanel();
     panel.style.display = "none";
     document.getElementById("manage-btn").onclick = () => {
@@ -3615,6 +3656,7 @@
     return it.statusCategory === "done" ? "#36b37e" : it.statusCategory === "new" ? "#8993a4" : "#4c9aff";
   }
   async function applyIssueColor(key, color) {
+    if (!ensureLicensed()) return;
     try {
       const r = await (0, import_bridge.invoke)("setIssueColor", { key, color: color || "" });
       if (r && r.error) {
@@ -3894,6 +3936,11 @@
           bar.style.left = `${baseLeft}px`;
           bar.style.width = `${baseWidth}px`;
           if (!moved) openIssue(it.key);
+          return;
+        }
+        if (!ensureLicensed()) {
+          bar.style.left = `${baseLeft}px`;
+          bar.style.width = `${baseWidth}px`;
           return;
         }
         let nStart = s0, nDue = e0;

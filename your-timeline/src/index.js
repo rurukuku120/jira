@@ -4,6 +4,19 @@ import { kvs } from '@forge/kvs';
 
 const resolver = new Resolver();
 
+// ---------- 라이선스 가드 ----------
+// 정책: 읽기 허용 / 쓰기 차단. license는 프로덕션+마켓플레이스 등록 앱에서만 존재하고
+// 개발·터널·미등록 환경에서는 undefined이므로, undefined는 차단하지 않는다
+// (active === false일 때만 미결제로 간주). 프론트 게이트의 2차 방어선.
+function isUnlicensed(req) {
+  const lic = req && req.context && req.context.license;
+  return !!(lic && lic.active !== true);
+}
+const LICENSE_REQUIRED = {
+  error: '유료 라이선스가 필요한 기능입니다. Atlassian Marketplace에서 구독해 주세요.',
+  licenseRequired: true,
+};
+
 const CUSTOM_HOLIDAY_KEY = 'custom-holidays'; // Storage 키 (전역 1개 객체)
 
 // 시작일로 인식할 필드 이름 후보 (소문자 비교)
@@ -71,6 +84,7 @@ resolver.define('listCustomHolidays', async () => {
 
 /** 수동 공휴일 추가/수정. payload: { date:'YYYY-MM-DD', name } */
 resolver.define('addCustomHoliday', async (req) => {
+  if (isUnlicensed(req)) return { ...LICENSE_REQUIRED };
   const { date, name } = req.payload || {};
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) {
     return { error: '날짜 형식이 올바르지 않습니다 (YYYY-MM-DD).' };
@@ -83,6 +97,7 @@ resolver.define('addCustomHoliday', async (req) => {
 
 /** 수동 공휴일 삭제. payload: { date } */
 resolver.define('removeCustomHoliday', async (req) => {
+  if (isUnlicensed(req)) return { ...LICENSE_REQUIRED };
   const { date } = req.payload || {};
   const custom = (await kvs.get(CUSTOM_HOLIDAY_KEY)) || {};
   delete custom[date];
@@ -139,6 +154,7 @@ resolver.define('getPresets', async () => {
 
 /** 보기 프리셋 저장. payload: { name, config } */
 resolver.define('savePreset', async (req) => {
+  if (isUnlicensed(req)) return { ...LICENSE_REQUIRED };
   const { name, config } = req.payload || {};
   const n = (name || '').trim();
   if (!n) return { error: '프리셋 이름이 필요합니다.' };
@@ -150,6 +166,7 @@ resolver.define('savePreset', async (req) => {
 
 /** 보기 프리셋 삭제. payload: { name } */
 resolver.define('deletePreset', async (req) => {
+  if (isUnlicensed(req)) return { ...LICENSE_REQUIRED };
   const { name } = req.payload || {};
   const presets = (await kvs.get(PRESET_KEY)) || {};
   delete presets[name];
@@ -194,6 +211,7 @@ resolver.define('listFilters', async () => {
  * global=true면 전역(모든 사용자) 공유 — '필터 공유' 권한이 있어야 성공.
  */
 resolver.define('saveFilter', async (req) => {
+  if (isUnlicensed(req)) return { ...LICENSE_REQUIRED };
   const { name, jql, global } = req.payload || {};
   const fname = (name || '').trim();
   const fjql = (jql || '').trim();
@@ -323,6 +341,7 @@ resolver.define('getIssues', async (req) => {
  * start는 startFieldId가 있을 때만 반영(없으면 created 기반이라 쓰기 불가).
  */
 resolver.define('updateIssueDates', async (req) => {
+  if (isUnlicensed(req)) return { ...LICENSE_REQUIRED };
   const { key, start, due } = req.payload || {};
   if (!key) return { error: 'key가 필요합니다.' };
   const startFieldId = (req.payload && req.payload.startFieldId) || (await detectStartFieldId());
@@ -360,6 +379,7 @@ resolver.define('getIssueColors', async () => {
 
 /** 이슈 색상 지정/해제. payload: { key, color } (color 비우면 해제) */
 resolver.define('setIssueColor', async (req) => {
+  if (isUnlicensed(req)) return { ...LICENSE_REQUIRED };
   const { key, color } = req.payload || {};
   if (!key) return { error: 'key가 필요합니다.' };
   const colors = (await kvs.get(ISSUE_COLOR_KEY)) || {};
@@ -379,6 +399,7 @@ resolver.define('getTitle', async () => {
 
 /** 페이지 제목 저장 */
 resolver.define('setTitle', async (req) => {
+  if (isUnlicensed(req)) return { ...LICENSE_REQUIRED };
   const t = (req.payload && req.payload.title || '').trim();
   await kvs.set(PAGE_TITLE_KEY, t || '당신의 타임라인');
   return { title: t || '당신의 타임라인' };

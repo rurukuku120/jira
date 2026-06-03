@@ -279,3 +279,28 @@ button.primary:disabled { opacity: .5; }
 .clickable { cursor: pointer; }
 .bar.clickable:hover { filter: brightness(1.1); outline: 2px solid rgba(255,255,255,0.6); }
 .issue-label.clickable:hover .sum { text-decoration: underline; }
+
+/* 라이선스 읽기 전용 배너 */
+.license-banner {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 8px 12px; padding: 8px 12px;
+  background: rgba(255, 171, 0, 0.12); border: 1px solid #ffab00;
+  border-radius: 8px; color: var(--text); font-size: 12px;
+}
+.license-banner-icon { font-size: 14px; }
+.license-banner-text { flex: 1 1 auto; }
+.license-banner-btn {
+  border: 1px solid var(--bar); background: var(--bar); color: #fff;
+  border-radius: 6px; padding: 5px 12px; cursor: pointer; font-size: 12px; white-space: nowrap;
+}
+.license-banner-btn:hover { filter: brightness(1.08); }
+
+/* 토스트 (쓰기 차단 안내) */
+.toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px);
+  z-index: 100; max-width: 90vw;
+  background: #172b4d; color: #fff; padding: 10px 16px; border-radius: 8px;
+  font-size: 13px; box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+  opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }

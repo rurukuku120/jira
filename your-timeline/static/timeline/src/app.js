@@ -67,7 +67,12 @@ const state = {
   holidays: {},
   custom: {},
   colors: {},         // { issueKey: '#hex' } 사용자 지정 이슈 색상
+  licensed: true,     // 라이선스 보유 여부(읽기 허용/쓰기 차단 게이트). undefined(개발/미등록)는 true로 간주
 };
+
+// 라이선스 미보유 시 안내할 마켓플레이스 리스팅 URL.
+// TODO: 마켓플레이스 리스팅 생성 후 실제 앱 페이지 URL로 교체.
+const LISTING_URL = 'https://marketplace.atlassian.com/';
 
 const root = () => document.getElementById('root');
 const colW = () => Math.max(2, Math.round(ZOOM[state.zoom].w * state.zoomScale));
@@ -79,6 +84,8 @@ async function main() {
     state.projectKey =
       context?.extension?.project?.key || context?.extension?.project?.id;
     state.myAccountId = context?.accountId || null;
+    // license는 프로덕션+마켓플레이스 등록 앱에서만 존재. 개발/터널/미등록 환경은 undefined → 게이트 미적용.
+    state.licensed = !context?.license || context.license.active === true;
 
     const [{ filters }, { title }, asg, col, ver, pre] = await Promise.all([
       invoke('listFilters'),
@@ -643,6 +650,7 @@ function renderToolbar() {
 }
 
 function startEditTitle(titleEl) {
+  if (!ensureLicensed()) return;
   const input = el('input', 'title-edit');
   input.type = 'text';
   input.value = state.title;
@@ -666,6 +674,36 @@ function showError(e) {
   root().appendChild(el('div', 'error', `오류: ${e.message || e}`));
 }
 
+// ---------- 라이선스 게이트 (읽기 허용 / 쓰기 차단) ----------
+// 일시적 토스트 메시지 (render로 지워지지 않도록 body에 부착)
+let toastEl = null, toastTimer = null;
+function toast(msg) {
+  if (!toastEl) { toastEl = el('div', 'toast'); document.body.appendChild(toastEl); }
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 3500);
+}
+
+// 쓰기 동작 진입 가드. 라이선스 없으면 토스트 안내 후 false 반환.
+function ensureLicensed() {
+  if (state.licensed) return true;
+  toast('🔒 유료 라이선스가 필요한 기능입니다. Marketplace에서 구독해 주세요.');
+  return false;
+}
+
+// 읽기 전용 모드 상단 배너
+function renderLicenseBanner() {
+  const b = el('div', 'license-banner');
+  b.append(el('span', 'license-banner-icon', '🔒'));
+  b.append(el('span', 'license-banner-text',
+    '읽기 전용 모드 — 날짜 변경·색상·공휴일/필터/프리셋 저장·제목 변경 등 편집 기능은 유료 라이선스가 필요합니다.'));
+  const btn = el('button', 'license-banner-btn', 'Marketplace에서 구독');
+  btn.onclick = () => router.open(LISTING_URL);
+  b.append(btn);
+  return b;
+}
+
 // ---------- 휴일 관리 패널 ----------
 function renderManagePanel() {
   const panel = el('div', 'manage');
@@ -679,6 +717,7 @@ function renderManagePanel() {
   const msg = el('span', 'manage-msg');
 
   addBtn.onclick = async () => {
+    if (!ensureLicensed()) return;
     const date = dateInput.value;
     if (!date) { msg.textContent = '날짜를 선택하세요.'; return; }
     addBtn.disabled = true;
@@ -703,7 +742,7 @@ function renderManagePanel() {
       item.appendChild(el('span', 'mi-date', date));
       item.appendChild(el('span', 'mi-name', name));
       const del = el('button', 'mi-del', '삭제');
-      del.onclick = async () => { del.disabled = true; await invoke('removeCustomHoliday', { date }); await loadAll(); };
+      del.onclick = async () => { if (!ensureLicensed()) return; del.disabled = true; await invoke('removeCustomHoliday', { date }); await loadAll(); };
       item.appendChild(del);
       list.appendChild(item);
     }
@@ -774,6 +813,7 @@ function renderSaveFilterPanel() {
   const msg = el('span', 'manage-msg');
 
   saveBtn.onclick = async () => {
+    if (!ensureLicensed()) return;
     const name = nameInput.value.trim();
     if (!name) { msg.textContent = '필터 이름을 입력하세요.'; return; }
     saveBtn.disabled = true;
@@ -825,6 +865,7 @@ function renderPresetPanel() {
   const saveBtn = el('button', 'primary', '현재 보기 저장');
   const msg = el('span', 'manage-msg');
   saveBtn.onclick = async () => {
+    if (!ensureLicensed()) return;
     const name = nameInput.value.trim();
     if (!name) { msg.textContent = '이름을 입력하세요.'; return; }
     saveBtn.disabled = true;
@@ -853,6 +894,7 @@ function renderPresetPanel() {
       apply.onclick = () => applyConfig(state.presets[n]);
       const del = el('button', 'mi-del', '삭제');
       del.onclick = async () => {
+        if (!ensureLicensed()) return;
         del.disabled = true;
         const { presets } = await invoke('deletePreset', { name: n });
         state.presets = presets || {};
@@ -1077,6 +1119,7 @@ function render(restoreScroll) {
   const prevScroll = restoreScroll ? null : (document.querySelector('.timeline-wrap')?.scrollLeft);
   root().innerHTML = '';
   root().appendChild(renderToolbar());
+  if (!state.licensed) root().appendChild(renderLicenseBanner());
 
   const panel = renderManagePanel();
   panel.style.display = 'none';
@@ -1197,6 +1240,7 @@ function statusColor(it) {
 
 // 이슈 색상 저장/해제 후 재렌더
 async function applyIssueColor(key, color) {
+  if (!ensureLicensed()) return;
   try {
     const r = await invoke('setIssueColor', { key, color: color || '' });
     if (r && r.error) { showError(new Error(r.error)); return; }
@@ -1500,6 +1544,13 @@ function attachDrag(bar, hL, hR, it, W) {
         bar.style.left = `${baseLeft}px`;
         bar.style.width = `${baseWidth}px`;
         if (!moved) openIssue(it.key);
+        return;
+      }
+
+      // 라이선스 없으면 날짜 편집 불가 → 막대 원위치 복원 후 안내
+      if (!ensureLicensed()) {
+        bar.style.left = `${baseLeft}px`;
+        bar.style.width = `${baseWidth}px`;
         return;
       }
 
