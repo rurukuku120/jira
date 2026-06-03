@@ -1,7 +1,7 @@
 modules:
   jira:projectPage:
     - key: holiday-timeline-page
-      title: 커스텀 타임라인
+      title: 당신의 타임라인
       icon: resource:main;icon.svg
       resource: main
       resolver:

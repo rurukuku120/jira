@@ -89,6 +89,26 @@ resolver.define('removeCustomHoliday', async (req) => {
   return { custom };
 });
 
+/** 프로젝트에 배정 가능한 사용자 목록 (accountId, displayName) */
+resolver.define('listAssignees', async (req) => {
+  const { projectKey } = req.payload || {};
+  if (!projectKey) return { assignees: [] };
+  try {
+    const res = await api.asUser().requestJira(
+      route`/rest/api/3/user/assignable/search?project=${projectKey}&maxResults=200`,
+      { headers: { Accept: 'application/json' } }
+    );
+    const data = await res.json();
+    const assignees = (Array.isArray(data) ? data : [])
+      .filter((u) => u.accountType !== 'app' && u.accountId)
+      .map((u) => ({ id: u.accountId, name: u.displayName || u.accountId }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return { assignees };
+  } catch (e) {
+    return { assignees: [], error: String(e) };
+  }
+});
+
 /** 사용자가 접근 가능한 저장된 필터 목록 (id, name, jql) */
 resolver.define('listFilters', async () => {
   try {
@@ -107,6 +127,38 @@ resolver.define('listFilters', async () => {
 });
 
 /**
+ * 현재 JQL을 Jira 저장 필터로 생성.
+ * payload: { name, jql, global?:boolean }
+ * global=true면 전역(모든 사용자) 공유 — '필터 공유' 권한이 있어야 성공.
+ */
+resolver.define('saveFilter', async (req) => {
+  const { name, jql, global } = req.payload || {};
+  const fname = (name || '').trim();
+  const fjql = (jql || '').trim();
+  if (!fname) return { error: '필터 이름을 입력하세요.' };
+  if (!fjql) return { error: '저장할 JQL이 없습니다.' };
+
+  const body = { name: fname, jql: fjql };
+  if (global) body.sharePermissions = [{ type: 'global' }];
+
+  try {
+    const res = await api.asUser().requestJira(route`/rest/api/3/filter`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      return { error: `필터 저장 실패 (${res.status}): ${t}` };
+    }
+    const data = await res.json();
+    return { filter: { id: data.id, name: data.name, jql: data.jql || fjql } };
+  } catch (e) {
+    return { error: String(e) };
+  }
+});
+
+/**
  * 이슈(시작일/마감일 보유) 조회.
  * payload: { projectKey, startFieldId?, jql? }
  */
@@ -121,9 +173,19 @@ resolver.define('getIssues', async (req) => {
   const orderIdx = base.toUpperCase().lastIndexOf(' ORDER BY ');
   const where = orderIdx >= 0 ? base.slice(0, orderIdx) : base;
   const order = orderIdx >= 0 ? base.slice(orderIdx) : ' ORDER BY duedate ASC';
-  const jql = `(${where}) AND duedate IS NOT EMPTY${order}`;
 
-  const fields = ['summary', 'duedate', 'status', 'issuetype', 'created', 'parent'];
+  // 담당자 필터 (다중 선택 + 할당되지 않음, 서버 측 조회 조건으로 결합)
+  const assignees = ((req.payload && req.payload.assignees) || []).filter(Boolean);
+  const includeUnassigned = !!(req.payload && req.payload.includeUnassigned);
+  const inList = assignees.map((a) => `"${a}"`).join(', ');
+  let assigneeClause = '';
+  if (inList && includeUnassigned) assigneeClause = ` AND (assignee IN (${inList}) OR assignee IS EMPTY)`;
+  else if (inList) assigneeClause = ` AND assignee IN (${inList})`;
+  else if (includeUnassigned) assigneeClause = ' AND assignee IS EMPTY';
+
+  const jql = `(${where}) AND duedate IS NOT EMPTY${assigneeClause}${order}`;
+
+  const fields = ['summary', 'duedate', 'status', 'issuetype', 'created', 'parent', 'assignee'];
   if (startFieldId) fields.push(startFieldId);
 
   try {
@@ -140,6 +202,7 @@ resolver.define('getIssues', async (req) => {
       const f = it.fields || {};
       const start = (startFieldId && f[startFieldId]) || f.created;
       const parent = f.parent;
+      const a = f.assignee;
       return {
         key: it.key,
         summary: f.summary,
@@ -150,6 +213,8 @@ resolver.define('getIssues', async (req) => {
         type: f.issuetype?.name || '',
         epicKey: parent?.key || null,
         epicName: parent?.fields?.summary || null,
+        assigneeId: a?.accountId || null,
+        assigneeName: a?.displayName || null,
       };
     });
     return { issues, startFieldId, jql };
@@ -195,15 +260,15 @@ const PAGE_TITLE_KEY = 'page-title';
 
 /** 페이지 제목 조회 */
 resolver.define('getTitle', async () => {
-  const title = (await storage.get(PAGE_TITLE_KEY)) || '커스텀 타임라인';
+  const title = (await storage.get(PAGE_TITLE_KEY)) || '당신의 타임라인';
   return { title };
 });
 
 /** 페이지 제목 저장 */
 resolver.define('setTitle', async (req) => {
   const t = (req.payload && req.payload.title || '').trim();
-  await storage.set(PAGE_TITLE_KEY, t || '커스텀 타임라인');
-  return { title: t || '커스텀 타임라인' };
+  await storage.set(PAGE_TITLE_KEY, t || '당신의 타임라인');
+  return { title: t || '당신의 타임라인' };
 });
 
 export const handler = resolver.getDefinitions();

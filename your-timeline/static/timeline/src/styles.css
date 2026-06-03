@@ -145,6 +145,33 @@ button.primary:disabled { opacity: .5; }
 .mi-name { flex: 1; }
 .mi-del { border: 1px solid var(--grid); background: var(--bg); border-radius: 4px; font-size: 12px; padding: 2px 8px; cursor: pointer; color: var(--subtle); }
 
+/* 담당자 피커 (Jira식 검색 + 다중 선택) */
+.asg-wrap { position: relative; display: inline-block; }
+.asg-btn { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; }
+.asg-btn-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asg-caret { color: var(--subtle); font-size: 10px; }
+.asg-pop {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 20;
+  width: 260px; max-width: 80vw; background: var(--bg);
+  border: 1px solid var(--grid); border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.25); padding: 8px;
+}
+.asg-search { width: 100%; font-size: 13px; padding: 6px 8px; border: 1px solid var(--grid); border-radius: 4px; background: var(--bg); color: var(--text); margin-bottom: 6px; box-sizing: border-box; }
+.asg-list { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; }
+.asg-row { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 4px; cursor: pointer; }
+.asg-row:hover { background: var(--bg-soft); }
+.asg-row input { cursor: pointer; margin: 0; }
+.asg-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asg-empty { color: var(--subtle); font-size: 12px; padding: 8px 6px; }
+.asg-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--grid); }
+.asg-clear { background: var(--bg); color: var(--subtle); border: 1px solid var(--grid); font-size: 12px; padding: 4px 8px; }
+.asg-apply { font-size: 12px; padding: 4px 12px; }
+
+/* 필터 저장 패널 */
+.sf-jql { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; background: var(--bg); border: 1px solid var(--grid); border-radius: 4px; padding: 6px 8px; margin-bottom: 8px; white-space: pre-wrap; word-break: break-word; max-width: 720px; color: var(--text); }
+.sf-global { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text); cursor: pointer; user-select: none; }
+.sf-global input { cursor: pointer; }
+
 .clickable { cursor: pointer; }
 .bar.clickable:hover { filter: brightness(1.1); outline: 2px solid rgba(255,255,255,0.6); }
 .issue-label.clickable:hover .sum { text-decoration: underline; }

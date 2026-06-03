@@ -1,4 +1,4 @@
-# 커스텀 타임라인 (Jira Forge 앱)
+# 당신의 타임라인 (Jira Forge 앱)
 
 Jira Cloud 프로젝트에 **자체 타임라인 페이지**를 추가하고, **한국 공휴일**을
 타임라인 위에 **빨간색 컬럼**으로 표시하는 Forge 앱입니다.
@@ -49,7 +49,7 @@ Jira Cloud 프로젝트에 **자체 타임라인 페이지**를 추가하고, **
 ## 파일 구조
 
 ```
-holiday-timeline/
+your-timeline/
 ├─ manifest.yml              # 모듈/권한/egress 정의
 ├─ package.json              # 백엔드 의존성
 ├─ src/index.js              # resolver: getHolidays, getIssues, listFilters, 수동휴일 CRUD
@@ -69,7 +69,7 @@ holiday-timeline/
 npm install -g @forge/cli   # 최초 1회
 forge login
 
-cd holiday-timeline
+cd your-timeline
 forge register              # app id가 manifest.yml에 기록됨
 forge variables set --encrypt HOLIDAY_API_KEY <디코딩된_서비스키>
 
@@ -80,11 +80,11 @@ forge deploy
 forge install               # Jira Cloud 사이트 선택
 ```
 
-설치 후 프로젝트 좌측 메뉴에 **커스텀 타임라인** 페이지가 생깁니다.
+설치 후 프로젝트 좌측 메뉴에 **당신의 타임라인** 페이지가 생깁니다.
 
 ## 페이지(앱) 제거 방법
 
-- **앱 전체 제거**: `forge uninstall` → 사이트 선택. 좌측 "커스텀 타임라인" 메뉴가 사라집니다.
+- **앱 전체 제거**: `forge uninstall` → 사이트 선택. 좌측 "당신의 타임라인" 메뉴가 사라집니다.
 - **메뉴만 빼고 앱은 유지**: `manifest.yml`에서 `jira:projectPage` 모듈 블록을 삭제 후 `forge deploy`.
 - 특정 프로젝트에서만 숨기려면 `jira:projectPage`에 `displayConditions`(프로젝트 속성 기반)를 추가해 조건부 표시.
 

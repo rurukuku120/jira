@@ -38,11 +38,14 @@ function el(tag, cls, text) {
 const state = {
   projectKey: null,
   filters: [],
+  assignees: [],          // 프로젝트 배정 가능 사용자 [{id, name}]
   selectedFilterId: '',
   customJql: '',
   zoom: 'week',
   view: 'tree',           // tree | epic | flat
-  title: '커스텀 타임라인',
+  assigneeIds: [],        // 선택된 담당자 accountId 배열
+  includeUnassigned: false, // '할당되지 않음' 포함 여부
+  title: '당신의 타임라인',
   collapsed: {},      // { epicKey: true } 접힘 상태
   data: null,         // 마지막 로드 결과 { issues, startFieldId, rangeStart, totalDays }
   holidays: {},
@@ -58,12 +61,14 @@ async function main() {
     state.projectKey =
       context?.extension?.project?.key || context?.extension?.project?.id;
 
-    const [{ filters }, { title }] = await Promise.all([
+    const [{ filters }, { title }, asg] = await Promise.all([
       invoke('listFilters'),
       invoke('getTitle'),
+      invoke('listAssignees', { projectKey: state.projectKey }),
     ]);
     state.filters = filters || [];
-    state.title = title || 'Holiday Timeline';
+    state.title = title || '당신의 타임라인';
+    state.assignees = (asg && asg.assignees) || [];
 
     await loadAll();
   } catch (e) {
@@ -82,6 +87,8 @@ async function loadAll() {
   const { issues, startFieldId, error: issueErr } = await invoke('getIssues', {
     projectKey: state.projectKey,
     jql: jql || undefined,
+    assignees: state.assigneeIds,
+    includeUnassigned: state.includeUnassigned,
   });
   if (issueErr) throw new Error(issueErr);
 
@@ -120,6 +127,126 @@ async function loadAll() {
   render(true);
 }
 
+// 로드된 이슈에서 담당자 목록(이름순) 수집. 미지정 존재 시 __unassigned__ 포함.
+function collectAssignees() {
+  const issues = (state.data && state.data.issues) || [];
+  const map = new Map();
+  let unassigned = false;
+  for (const it of issues) {
+    if (it.assigneeId) map.set(it.assigneeId, it.assigneeName || it.assigneeId);
+    else unassigned = true;
+  }
+  const list = [...map.entries()]
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  if (unassigned) list.push({ id: '__unassigned__', name: '미지정' });
+  return list;
+}
+
+// 담당자 선택 요약 라벨
+function assigneeLabel() {
+  const n = state.assigneeIds.length + (state.includeUnassigned ? 1 : 0);
+  if (n === 0) return '담당자: 전체';
+  if (state.assigneeIds.length === 1 && !state.includeUnassigned) {
+    const a = state.assignees.find((x) => x.id === state.assigneeIds[0]);
+    return `담당자: ${a ? a.name : '1명'}`;
+  }
+  if (state.assigneeIds.length === 0 && state.includeUnassigned) return '담당자: 할당되지 않음';
+  return `담당자: ${n}명`;
+}
+
+// Jira식 검색 + 다중 선택 담당자 피커
+function renderAssigneePicker() {
+  const wrap = el('div', 'asg-wrap');
+  const btn = el('button', 'asg-btn');
+  btn.appendChild(el('span', 'asg-btn-label', assigneeLabel()));
+  btn.appendChild(el('span', 'asg-caret', '▾'));
+  wrap.appendChild(btn);
+
+  const pop = el('div', 'asg-pop');
+  pop.style.display = 'none';
+  wrap.appendChild(pop);
+
+  // 검색창
+  const search = el('input', 'asg-search');
+  search.type = 'text';
+  search.placeholder = '담당자 검색';
+  pop.appendChild(search);
+
+  const list = el('div', 'asg-list');
+  pop.appendChild(list);
+
+  // 작업용 선택 상태(닫힐 때 일괄 적용)
+  const selIds = new Set(state.assigneeIds);
+  let selUn = state.includeUnassigned;
+  const users = state.assignees.length ? state.assignees : collectAssignees().filter((a) => a.id !== '__unassigned__');
+
+  const checkRow = (checked, label, onToggle) => {
+    const row = el('label', 'asg-row');
+    const cb = el('input');
+    cb.type = 'checkbox';
+    cb.checked = checked;
+    cb.onchange = () => onToggle(cb.checked);
+    row.appendChild(cb);
+    row.appendChild(el('span', 'asg-name', label));
+    return row;
+  };
+
+  const buildList = () => {
+    list.innerHTML = '';
+    const q = search.value.trim().toLowerCase();
+    if (!q || '할당되지 않음'.includes(q) || 'unassigned'.includes(q)) {
+      list.appendChild(checkRow(selUn, '할당되지 않음', (v) => { selUn = v; }));
+    }
+    let shown = 0;
+    for (const a of users) {
+      if (q && !a.name.toLowerCase().includes(q)) continue;
+      list.appendChild(checkRow(selIds.has(a.id), a.name, (v) => { v ? selIds.add(a.id) : selIds.delete(a.id); }));
+      if (++shown >= 100) break;
+    }
+    if (shown === 0 && q) list.appendChild(el('div', 'asg-empty', '검색 결과 없음'));
+  };
+  search.oninput = buildList;
+  buildList();
+
+  // 하단 액션: 지우기 / 적용
+  const foot = el('div', 'asg-foot');
+  const clearBtn = el('button', 'asg-clear', '선택 지우기');
+  clearBtn.onclick = () => { selIds.clear(); selUn = false; buildList(); };
+  const applyBtn = el('button', 'asg-apply primary', '적용');
+  foot.append(clearBtn, applyBtn);
+  pop.appendChild(foot);
+
+  const apply = async () => {
+    const newIds = [...selIds];
+    const changed =
+      selUn !== state.includeUnassigned ||
+      newIds.length !== state.assigneeIds.length ||
+      newIds.some((id) => !state.assigneeIds.includes(id));
+    closePop();
+    if (!changed) return;
+    state.assigneeIds = newIds;
+    state.includeUnassigned = selUn;
+    try { await loadAll(); } catch (e) { showError(e); }
+  };
+  applyBtn.onclick = apply;
+
+  // 외부 클릭 시 닫기(적용 없이) — 변경은 '적용' 버튼으로만
+  const onDocDown = (ev) => { if (!wrap.contains(ev.target)) closePop(); };
+  function openPop() {
+    pop.style.display = 'block';
+    document.addEventListener('mousedown', onDocDown);
+    setTimeout(() => search.focus(), 0);
+  }
+  function closePop() {
+    pop.style.display = 'none';
+    document.removeEventListener('mousedown', onDocDown);
+  }
+  btn.onclick = () => { pop.style.display === 'none' ? openPop() : closePop(); };
+
+  return wrap;
+}
+
 function dayMeta(dateStr) {
   const dow = parse(dateStr).getDay();
   const isWeekend = dow === 0 || dow === 6;
@@ -148,6 +275,8 @@ function renderToolbar() {
   sel.onchange = async () => {
     state.selectedFilterId = sel.value;
     state.customJql = '';
+    state.assigneeIds = [];
+    state.includeUnassigned = false;
     try { await loadAll(); } catch (e) { showError(e); }
   };
   toolbar.appendChild(sel);
@@ -169,17 +298,28 @@ function renderToolbar() {
     jqlInput.style.height = 'auto';
     jqlInput.style.height = jqlInput.scrollHeight + 'px';
   };
-  jqlInput.oninput = autoGrow;
+  jqlInput.oninput = () => { state.customJql = jqlInput.value; autoGrow(); };
   jqlInput.onkeydown = async (ev) => {
     if (ev.key === 'Enter' && !ev.shiftKey) {
       ev.preventDefault();
       state.customJql = jqlInput.value;
       state.selectedFilterId = '';
+      state.assigneeIds = [];
+      state.includeUnassigned = false;
       try { await loadAll(); } catch (e) { showError(e); }
     }
   };
   toolbar.appendChild(jqlInput);
   setTimeout(autoGrow, 0);
+
+  // 현재 JQL을 Jira 저장 필터로 만들기
+  const saveFilterBtn = el('button', null, '필터 저장');
+  saveFilterBtn.id = 'save-filter-btn';
+  saveFilterBtn.title = '현재 JQL을 Jira 저장 필터로 만들기';
+  toolbar.appendChild(saveFilterBtn);
+
+  // 담당자 필터 (Jira식 검색 + 다중 선택 피커)
+  toolbar.appendChild(renderAssigneePicker());
 
   // 보기 방식 (계층/에픽별/평면)
   const viewSel = el('select');
@@ -233,7 +373,7 @@ function startEditTitle(titleEl) {
   input.focus();
   input.select();
   const commit = async () => {
-    const v = input.value.trim() || '커스텀 타임라인';
+    const v = input.value.trim() || '당신의 타임라인';
     const { title } = await invoke('setTitle', { title: v });
     state.title = title;
     render();
@@ -295,6 +435,66 @@ function renderManagePanel() {
   return panel;
 }
 
+// ---------- 필터 저장 패널 ----------
+// 현재 화면의 유효 JQL을 반환 (직접 입력 우선, 없으면 선택된 필터의 JQL)
+function currentJql() {
+  if (state.customJql.trim()) return state.customJql.trim();
+  if (state.selectedFilterId) {
+    const f = state.filters.find((x) => String(x.id) === String(state.selectedFilterId));
+    return (f && f.jql) || `filter = ${state.selectedFilterId}`;
+  }
+  return '';
+}
+
+function renderSaveFilterPanel() {
+  const panel = el('div', 'manage');
+  panel.appendChild(el('div', 'manage-title', '현재 JQL을 필터로 저장'));
+
+  const jql = currentJql();
+  if (!jql) {
+    panel.appendChild(el('div', 'manage-empty', '저장할 JQL이 없습니다. JQL을 직접 입력한 뒤 저장하세요.'));
+    return panel;
+  }
+
+  panel.appendChild(el('div', 'sf-jql', jql));
+
+  const form = el('div', 'manage-form');
+  const nameInput = el('input');
+  nameInput.type = 'text';
+  nameInput.placeholder = '필터 이름';
+
+  const globalWrap = el('label', 'sf-global');
+  const globalChk = el('input');
+  globalChk.type = 'checkbox';
+  globalWrap.appendChild(globalChk);
+  globalWrap.appendChild(document.createTextNode(' 전역 공유(모든 사용자)'));
+
+  const saveBtn = el('button', 'primary', '저장');
+  const msg = el('span', 'manage-msg');
+
+  saveBtn.onclick = async () => {
+    const name = nameInput.value.trim();
+    if (!name) { msg.textContent = '필터 이름을 입력하세요.'; return; }
+    saveBtn.disabled = true;
+    msg.textContent = '저장 중…';
+    const { filter, error } = await invoke('saveFilter', {
+      name, jql, global: globalChk.checked,
+    });
+    saveBtn.disabled = false;
+    if (error) { msg.textContent = error; return; }
+    // 필터 목록에 추가하고 그 필터로 선택 전환
+    state.filters = [...state.filters, filter].sort((a, b) => a.name.localeCompare(b.name));
+    state.selectedFilterId = String(filter.id);
+    state.customJql = '';
+    msg.textContent = '저장됨!';
+    try { await loadAll(); } catch (e) { showError(e); }
+  };
+
+  form.append(nameInput, globalWrap, saveBtn, msg);
+  panel.appendChild(form);
+  return panel;
+}
+
 // ---------- 메인 렌더 ----------
 function render(restoreScroll) {
   const prevScroll = restoreScroll ? null : (document.querySelector('.timeline-wrap')?.scrollLeft);
@@ -308,10 +508,23 @@ function render(restoreScroll) {
   };
   root().appendChild(panel);
 
+  // 필터 저장 패널 (toolbar의 '필터 저장' 버튼으로 토글 — 열 때마다 최신 JQL로 다시 그림)
+  let sfPanel = renderSaveFilterPanel();
+  sfPanel.style.display = 'none';
+  root().appendChild(sfPanel);
+  document.getElementById('save-filter-btn').onclick = () => {
+    if (sfPanel.style.display !== 'none') { sfPanel.style.display = 'none'; return; }
+    const fresh = renderSaveFilterPanel();
+    sfPanel.replaceWith(fresh);
+    sfPanel = fresh;
+    sfPanel.style.display = 'block';
+  };
+
   const d = state.data;
   if (!d || !d.issues || d.issues.length === 0) {
     const meta = d && d.startFieldId ? `시작일 필드: ${d.startFieldId}` : '';
-    root().appendChild(el('div', 'empty', `조건에 맞고 마감일(duedate)이 설정된 이슈가 없습니다. ${meta}`));
+    const who = (state.assigneeIds.length || state.includeUnassigned) ? '선택한 담당자의 ' : '';
+    root().appendChild(el('div', 'empty', `${who}조건에 맞고 마감일(duedate)이 설정된 이슈가 없습니다. ${meta}`));
     return;
   }
 

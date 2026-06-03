@@ -2457,12 +2457,18 @@
   var state = {
     projectKey: null,
     filters: [],
+    assignees: [],
+    // 프로젝트 배정 가능 사용자 [{id, name}]
     selectedFilterId: "",
     customJql: "",
     zoom: "week",
     view: "tree",
     // tree | epic | flat
-    title: "\uCEE4\uC2A4\uD140 \uD0C0\uC784\uB77C\uC778",
+    assigneeIds: [],
+    // 선택된 담당자 accountId 배열
+    includeUnassigned: false,
+    // '할당되지 않음' 포함 여부
+    title: "\uB2F9\uC2E0\uC758 \uD0C0\uC784\uB77C\uC778",
     collapsed: {},
     // { epicKey: true } 접힘 상태
     data: null,
@@ -2476,12 +2482,14 @@
     try {
       const context = await import_bridge.view.getContext();
       state.projectKey = context?.extension?.project?.key || context?.extension?.project?.id;
-      const [{ filters }, { title }] = await Promise.all([
+      const [{ filters }, { title }, asg] = await Promise.all([
         (0, import_bridge.invoke)("listFilters"),
-        (0, import_bridge.invoke)("getTitle")
+        (0, import_bridge.invoke)("getTitle"),
+        (0, import_bridge.invoke)("listAssignees", { projectKey: state.projectKey })
       ]);
       state.filters = filters || [];
-      state.title = title || "Holiday Timeline";
+      state.title = title || "\uB2F9\uC2E0\uC758 \uD0C0\uC784\uB77C\uC778";
+      state.assignees = asg && asg.assignees || [];
       await loadAll();
     } catch (e) {
       root().innerHTML = `<div class="error">\uC624\uB958: ${e.message || e}</div>`;
@@ -2494,7 +2502,9 @@
     }
     const { issues, startFieldId, error: issueErr } = await (0, import_bridge.invoke)("getIssues", {
       projectKey: state.projectKey,
-      jql: jql || void 0
+      jql: jql || void 0,
+      assignees: state.assigneeIds,
+      includeUnassigned: state.includeUnassigned
     });
     if (issueErr) throw new Error(issueErr);
     if (!issues || issues.length === 0) {
@@ -2525,6 +2535,117 @@
     state.custom = custom || {};
     render(true);
   }
+  function collectAssignees() {
+    const issues = state.data && state.data.issues || [];
+    const map = /* @__PURE__ */ new Map();
+    let unassigned = false;
+    for (const it of issues) {
+      if (it.assigneeId) map.set(it.assigneeId, it.assigneeName || it.assigneeId);
+      else unassigned = true;
+    }
+    const list = [...map.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+    if (unassigned) list.push({ id: "__unassigned__", name: "\uBBF8\uC9C0\uC815" });
+    return list;
+  }
+  function assigneeLabel() {
+    const n = state.assigneeIds.length + (state.includeUnassigned ? 1 : 0);
+    if (n === 0) return "\uB2F4\uB2F9\uC790: \uC804\uCCB4";
+    if (state.assigneeIds.length === 1 && !state.includeUnassigned) {
+      const a = state.assignees.find((x) => x.id === state.assigneeIds[0]);
+      return `\uB2F4\uB2F9\uC790: ${a ? a.name : "1\uBA85"}`;
+    }
+    if (state.assigneeIds.length === 0 && state.includeUnassigned) return "\uB2F4\uB2F9\uC790: \uD560\uB2F9\uB418\uC9C0 \uC54A\uC74C";
+    return `\uB2F4\uB2F9\uC790: ${n}\uBA85`;
+  }
+  function renderAssigneePicker() {
+    const wrap = el("div", "asg-wrap");
+    const btn = el("button", "asg-btn");
+    btn.appendChild(el("span", "asg-btn-label", assigneeLabel()));
+    btn.appendChild(el("span", "asg-caret", "\u25BE"));
+    wrap.appendChild(btn);
+    const pop = el("div", "asg-pop");
+    pop.style.display = "none";
+    wrap.appendChild(pop);
+    const search = el("input", "asg-search");
+    search.type = "text";
+    search.placeholder = "\uB2F4\uB2F9\uC790 \uAC80\uC0C9";
+    pop.appendChild(search);
+    const list = el("div", "asg-list");
+    pop.appendChild(list);
+    const selIds = new Set(state.assigneeIds);
+    let selUn = state.includeUnassigned;
+    const users = state.assignees.length ? state.assignees : collectAssignees().filter((a) => a.id !== "__unassigned__");
+    const checkRow = (checked, label, onToggle) => {
+      const row = el("label", "asg-row");
+      const cb = el("input");
+      cb.type = "checkbox";
+      cb.checked = checked;
+      cb.onchange = () => onToggle(cb.checked);
+      row.appendChild(cb);
+      row.appendChild(el("span", "asg-name", label));
+      return row;
+    };
+    const buildList = () => {
+      list.innerHTML = "";
+      const q = search.value.trim().toLowerCase();
+      if (!q || "\uD560\uB2F9\uB418\uC9C0 \uC54A\uC74C".includes(q) || "unassigned".includes(q)) {
+        list.appendChild(checkRow(selUn, "\uD560\uB2F9\uB418\uC9C0 \uC54A\uC74C", (v) => {
+          selUn = v;
+        }));
+      }
+      let shown = 0;
+      for (const a of users) {
+        if (q && !a.name.toLowerCase().includes(q)) continue;
+        list.appendChild(checkRow(selIds.has(a.id), a.name, (v) => {
+          v ? selIds.add(a.id) : selIds.delete(a.id);
+        }));
+        if (++shown >= 100) break;
+      }
+      if (shown === 0 && q) list.appendChild(el("div", "asg-empty", "\uAC80\uC0C9 \uACB0\uACFC \uC5C6\uC74C"));
+    };
+    search.oninput = buildList;
+    buildList();
+    const foot = el("div", "asg-foot");
+    const clearBtn = el("button", "asg-clear", "\uC120\uD0DD \uC9C0\uC6B0\uAE30");
+    clearBtn.onclick = () => {
+      selIds.clear();
+      selUn = false;
+      buildList();
+    };
+    const applyBtn = el("button", "asg-apply primary", "\uC801\uC6A9");
+    foot.append(clearBtn, applyBtn);
+    pop.appendChild(foot);
+    const apply = async () => {
+      const newIds = [...selIds];
+      const changed = selUn !== state.includeUnassigned || newIds.length !== state.assigneeIds.length || newIds.some((id) => !state.assigneeIds.includes(id));
+      closePop();
+      if (!changed) return;
+      state.assigneeIds = newIds;
+      state.includeUnassigned = selUn;
+      try {
+        await loadAll();
+      } catch (e) {
+        showError(e);
+      }
+    };
+    applyBtn.onclick = apply;
+    const onDocDown = (ev) => {
+      if (!wrap.contains(ev.target)) closePop();
+    };
+    function openPop() {
+      pop.style.display = "block";
+      document.addEventListener("mousedown", onDocDown);
+      setTimeout(() => search.focus(), 0);
+    }
+    function closePop() {
+      pop.style.display = "none";
+      document.removeEventListener("mousedown", onDocDown);
+    }
+    btn.onclick = () => {
+      pop.style.display === "none" ? openPop() : closePop();
+    };
+    return wrap;
+  }
   function dayMeta(dateStr) {
     const dow = parse(dateStr).getDay();
     const isWeekend = dow === 0 || dow === 6;
@@ -2547,6 +2668,8 @@
     sel.onchange = async () => {
       state.selectedFilterId = sel.value;
       state.customJql = "";
+      state.assigneeIds = [];
+      state.includeUnassigned = false;
       try {
         await loadAll();
       } catch (e) {
@@ -2568,12 +2691,17 @@
       jqlInput.style.height = "auto";
       jqlInput.style.height = jqlInput.scrollHeight + "px";
     };
-    jqlInput.oninput = autoGrow;
+    jqlInput.oninput = () => {
+      state.customJql = jqlInput.value;
+      autoGrow();
+    };
     jqlInput.onkeydown = async (ev) => {
       if (ev.key === "Enter" && !ev.shiftKey) {
         ev.preventDefault();
         state.customJql = jqlInput.value;
         state.selectedFilterId = "";
+        state.assigneeIds = [];
+        state.includeUnassigned = false;
         try {
           await loadAll();
         } catch (e) {
@@ -2583,6 +2711,11 @@
     };
     toolbar.appendChild(jqlInput);
     setTimeout(autoGrow, 0);
+    const saveFilterBtn = el("button", null, "\uD544\uD130 \uC800\uC7A5");
+    saveFilterBtn.id = "save-filter-btn";
+    saveFilterBtn.title = "\uD604\uC7AC JQL\uC744 Jira \uC800\uC7A5 \uD544\uD130\uB85C \uB9CC\uB4E4\uAE30";
+    toolbar.appendChild(saveFilterBtn);
+    toolbar.appendChild(renderAssigneePicker());
     const viewSel = el("select");
     viewSel.title = "\uBCF4\uAE30 \uBC29\uC2DD";
     for (const [val, label] of [["tree", "\uACC4\uCE35 \uBCF4\uAE30"], ["epic", "\uC5D0\uD53D\uBCC4 \uADF8\uB8F9"], ["flat", "\uD3C9\uBA74 \uBCF4\uAE30"]]) {
@@ -2624,7 +2757,7 @@
     input.focus();
     input.select();
     const commit = async () => {
-      const v = input.value.trim() || "\uCEE4\uC2A4\uD140 \uD0C0\uC784\uB77C\uC778";
+      const v = input.value.trim() || "\uB2F9\uC2E0\uC758 \uD0C0\uC784\uB77C\uC778";
       const { title } = await (0, import_bridge.invoke)("setTitle", { title: v });
       state.title = title;
       render();
@@ -2689,6 +2822,66 @@
     }
     return panel;
   }
+  function currentJql() {
+    if (state.customJql.trim()) return state.customJql.trim();
+    if (state.selectedFilterId) {
+      const f = state.filters.find((x) => String(x.id) === String(state.selectedFilterId));
+      return f && f.jql || `filter = ${state.selectedFilterId}`;
+    }
+    return "";
+  }
+  function renderSaveFilterPanel() {
+    const panel = el("div", "manage");
+    panel.appendChild(el("div", "manage-title", "\uD604\uC7AC JQL\uC744 \uD544\uD130\uB85C \uC800\uC7A5"));
+    const jql = currentJql();
+    if (!jql) {
+      panel.appendChild(el("div", "manage-empty", "\uC800\uC7A5\uD560 JQL\uC774 \uC5C6\uC2B5\uB2C8\uB2E4. JQL\uC744 \uC9C1\uC811 \uC785\uB825\uD55C \uB4A4 \uC800\uC7A5\uD558\uC138\uC694."));
+      return panel;
+    }
+    panel.appendChild(el("div", "sf-jql", jql));
+    const form = el("div", "manage-form");
+    const nameInput = el("input");
+    nameInput.type = "text";
+    nameInput.placeholder = "\uD544\uD130 \uC774\uB984";
+    const globalWrap = el("label", "sf-global");
+    const globalChk = el("input");
+    globalChk.type = "checkbox";
+    globalWrap.appendChild(globalChk);
+    globalWrap.appendChild(document.createTextNode(" \uC804\uC5ED \uACF5\uC720(\uBAA8\uB4E0 \uC0AC\uC6A9\uC790)"));
+    const saveBtn = el("button", "primary", "\uC800\uC7A5");
+    const msg = el("span", "manage-msg");
+    saveBtn.onclick = async () => {
+      const name = nameInput.value.trim();
+      if (!name) {
+        msg.textContent = "\uD544\uD130 \uC774\uB984\uC744 \uC785\uB825\uD558\uC138\uC694.";
+        return;
+      }
+      saveBtn.disabled = true;
+      msg.textContent = "\uC800\uC7A5 \uC911\u2026";
+      const { filter, error } = await (0, import_bridge.invoke)("saveFilter", {
+        name,
+        jql,
+        global: globalChk.checked
+      });
+      saveBtn.disabled = false;
+      if (error) {
+        msg.textContent = error;
+        return;
+      }
+      state.filters = [...state.filters, filter].sort((a, b) => a.name.localeCompare(b.name));
+      state.selectedFilterId = String(filter.id);
+      state.customJql = "";
+      msg.textContent = "\uC800\uC7A5\uB428!";
+      try {
+        await loadAll();
+      } catch (e) {
+        showError(e);
+      }
+    };
+    form.append(nameInput, globalWrap, saveBtn, msg);
+    panel.appendChild(form);
+    return panel;
+  }
   function render(restoreScroll) {
     const prevScroll = restoreScroll ? null : document.querySelector(".timeline-wrap")?.scrollLeft;
     root().innerHTML = "";
@@ -2699,10 +2892,24 @@
       panel.style.display = panel.style.display === "none" ? "block" : "none";
     };
     root().appendChild(panel);
+    let sfPanel = renderSaveFilterPanel();
+    sfPanel.style.display = "none";
+    root().appendChild(sfPanel);
+    document.getElementById("save-filter-btn").onclick = () => {
+      if (sfPanel.style.display !== "none") {
+        sfPanel.style.display = "none";
+        return;
+      }
+      const fresh = renderSaveFilterPanel();
+      sfPanel.replaceWith(fresh);
+      sfPanel = fresh;
+      sfPanel.style.display = "block";
+    };
     const d = state.data;
     if (!d || !d.issues || d.issues.length === 0) {
       const meta = d && d.startFieldId ? `\uC2DC\uC791\uC77C \uD544\uB4DC: ${d.startFieldId}` : "";
-      root().appendChild(el("div", "empty", `\uC870\uAC74\uC5D0 \uB9DE\uACE0 \uB9C8\uAC10\uC77C(duedate)\uC774 \uC124\uC815\uB41C \uC774\uC288\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. ${meta}`));
+      const who = state.assigneeIds.length || state.includeUnassigned ? "\uC120\uD0DD\uD55C \uB2F4\uB2F9\uC790\uC758 " : "";
+      root().appendChild(el("div", "empty", `${who}\uC870\uAC74\uC5D0 \uB9DE\uACE0 \uB9C8\uAC10\uC77C(duedate)\uC774 \uC124\uC815\uB41C \uC774\uC288\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. ${meta}`));
       return;
     }
     root().appendChild(renderTimeline(d));
