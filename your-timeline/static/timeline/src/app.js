@@ -872,7 +872,14 @@ function renderTimeline({ issues, rangeStart, totalDays }) {
       const bar = el('div', barClass(it) + ' clickable', barText);
       bar.style.left = `${offset * W + 1}px`;
       bar.style.width = `${span * W - 2}px`;
-      if (state.colors[it.key]) bar.style.background = state.colors[it.key]; // 사용자 지정 색
+      if (state.colors[it.key]) {
+        // 사용자 지정 색. 흰색/검정만 글자색 대응(흰 배경에 흰 글씨 방지)
+        const c = state.colors[it.key];
+        bar.style.background = c;
+        const lc = c.toLowerCase();
+        if (lc === '#ffffff' || lc === '#fff') bar.style.color = '#172b4d';
+        else if (lc === '#000000' || lc === '#000') bar.style.color = '#fff';
+      }
       bar.title = `${it.key} · ${s} ~ ${e} · ${it.status} (클릭하여 열기 · 양끝/가운데 드래그로 기간 변경)`;
       // 양끝 + 본체 드래그 핸들 (기간 조절 / 이동)
       const hL = el('div', 'bar-handle left');

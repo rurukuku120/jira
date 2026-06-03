@@ -3240,7 +3240,13 @@
         const bar = el("div", barClass(it) + " clickable", barText);
         bar.style.left = `${offset * W + 1}px`;
         bar.style.width = `${span * W - 2}px`;
-        if (state.colors[it.key]) bar.style.background = state.colors[it.key];
+        if (state.colors[it.key]) {
+          const c = state.colors[it.key];
+          bar.style.background = c;
+          const lc = c.toLowerCase();
+          if (lc === "#ffffff" || lc === "#fff") bar.style.color = "#172b4d";
+          else if (lc === "#000000" || lc === "#000") bar.style.color = "#fff";
+        }
         bar.title = `${it.key} \xB7 ${s} ~ ${e} \xB7 ${it.status} (\uD074\uB9AD\uD558\uC5EC \uC5F4\uAE30 \xB7 \uC591\uB05D/\uAC00\uC6B4\uB370 \uB4DC\uB798\uADF8\uB85C \uAE30\uAC04 \uBCC0\uACBD)`;
         const hL = el("div", "bar-handle left");
         const hR = el("div", "bar-handle right");
