@@ -40,13 +40,19 @@ body {
 .error { color: var(--holiday-line); }
 
 .toolbar {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; gap: 10px;
   padding: 10px 12px; border-bottom: 1px solid var(--grid); flex-wrap: wrap;
 }
-/* 좌(필터류) / 우(보기 옵션·건수·범례) 그룹 */
-.tb-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* 좌(필터류) / 우(보기 옵션·건수·범례) 그룹 — 아웃라인 박스로 구분 */
+.tb-group {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  background: var(--bg-soft); border: 1px solid var(--grid);
+  border-radius: 10px; padding: 6px 10px;
+}
 .tb-left { flex: 1 1 auto; }
-.tb-right { margin-left: auto; gap: 10px; }
+.tb-right { margin-left: auto; }
+/* 그룹 안 컨트롤은 테두리를 또렷하게 */
+.tb-group select, .tb-group button { border-color: var(--subtle); }
 .tb-reset { color: var(--subtle); }
 .tb-adv.active { border-color: var(--bar); color: var(--bar); }
 .sort-dir { min-width: 30px; font-weight: 700; }
