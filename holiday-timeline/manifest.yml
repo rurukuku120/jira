@@ -1,0 +1,37 @@
+modules:
+  jira:projectPage:
+    - key: holiday-timeline-page
+      title: 커스텀 타임라인
+      icon: resource:main;icon.svg
+      resource: main
+      resolver:
+        function: resolver
+      layout: native
+  function:
+    - key: resolver
+      handler: index.handler
+
+resources:
+  - key: main
+    path: static/timeline/dist
+    # tunnel:  # forge tunnel 사용 시 자동 처리
+
+app:
+  runtime:
+    name: nodejs22.x
+  id: ari:cloud:ecosystem::app/c6b781b2-c6bb-4200-aafa-f93e9d17a09b
+
+permissions:
+  scopes:
+    - read:jira-work # 이슈 조회 (JQL) + 필드 메타
+    - write:jira-work # 바 드래그로 시작일/마감일 수정
+    - read:jira-user
+    - storage:app # 수동 추가 공휴일 저장
+  external:
+    fetch:
+      backend:
+        # 한국 공휴일 공개 API (키 불필요) egress 허용
+        - 'date.nager.at'
+  content:
+    styles:
+      - unsafe-inline

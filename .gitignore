@@ -1,0 +1,11 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Forge
+.forge/
+
+# Logs / env
+*.log
+.env
+.DS_Store

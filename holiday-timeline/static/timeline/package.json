@@ -1,0 +1,14 @@
+{
+  "name": "holiday-timeline-ui",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/app.js --bundle --outfile=dist/index.js --format=iife && node copy-assets.mjs"
+  },
+  "dependencies": {
+    "@forge/bridge": "^4.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.23.0"
+  }
+}
